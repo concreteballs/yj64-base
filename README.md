@@ -32,3 +32,6 @@ The development bridge uses loopback TCP:
 - token: configured in `config/bridge.json`
 
 A real HTTPS reporting endpoint is not configured yet.
+
+
+Stage 2 build trigger: embedded-agent base integration.
