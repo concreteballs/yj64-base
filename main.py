@@ -87,8 +87,7 @@ class YJ64BaseApp(App):
             return
 
         self.status.text = (
-            "Embedded diagnostic agent
-"
+            "Embedded diagnostic agent\n"
             f"Bridge: {data.get('bridge_status', 'unknown')}\n"
             f"Self-diagnostic: {data.get('self_diagnostic', 'unknown')}\n"
             f"Base app: {data.get('target_launch', 'unknown')}\n"
