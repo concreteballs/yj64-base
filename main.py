@@ -43,6 +43,33 @@ class YJ64BaseApp(App):
         Clock.schedule_interval(self._refresh_status, 1.0)
         return root
 
+
+    def _write_runtime_event(self, event: str) -> None:
+        """Persist an explicit Activity lifecycle event for diagnostics."""
+        try:
+            path = Path(self.user_data_dir) / "base-runtime-events.jsonl"
+            record = {
+                "event": event,
+                "timestamp_ms": int(__import__("time").time() * 1000),
+            }
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+        except OSError:
+            pass
+
+    def on_start(self) -> None:
+        self._write_runtime_event("base_activity_started")
+
+    def on_resume(self) -> None:
+        self._write_runtime_event("base_activity_resumed")
+
+    def on_pause(self) -> bool:
+        self._write_runtime_event("base_activity_paused")
+        return True
+
+    def on_stop(self) -> None:
+        self._write_runtime_event("base_activity_stopped")
+
     def _launched_by_internal_agent(self) -> bool:
         try:
             from jnius import autoclass
