@@ -201,6 +201,36 @@ def send_report_or_spool(
     return bridge_ok
 
 
+def inspect_activity_process(service: Any, package_name: str) -> dict[str, Any]:
+    """Observe the target app's own processes from its embedded service."""
+    activity_manager = service.getSystemService("activity")
+    package_manager = service.getPackageManager()
+    application_info = package_manager.getApplicationInfo(package_name, 0)
+    target_uid = int(application_info.uid)
+
+    matching: list[dict[str, Any]] = []
+    for process in activity_manager.getRunningAppProcesses() or []:
+        if int(process.uid) != target_uid:
+            continue
+        matching.append(
+            {
+                "pid": int(process.pid),
+                "process_name": str(process.processName),
+                "importance": int(process.importance),
+            }
+        )
+
+    activity_process = [
+        item for item in matching
+        if item["process_name"] == package_name
+    ]
+    return {
+        "target_uid": target_uid,
+        "processes": matching,
+        "activity_process_visible": bool(activity_process),
+    }
+
+
 def run() -> None:
     PythonService = autoclass("org.kivy.android.PythonService")
     service = PythonService.mService
@@ -277,8 +307,45 @@ def run() -> None:
         },
     )
 
+    last_activity_process_visible: bool | None = None
+
     while True:
-        time.sleep(30)
+        try:
+            process_state = inspect_activity_process(
+                service,
+                str(config["target_package"]),
+            )
+            visible = bool(process_state["activity_process_visible"])
+            if visible != last_activity_process_visible:
+                process_report = make_report(
+                    agent_id,
+                    "target_activity_process_state",
+                    target_package=config["target_package"],
+                    **process_state,
+                )
+                send_report_or_spool(
+                    config,
+                    service,
+                    spool,
+                    process_report,
+                )
+                last_activity_process_visible = visible
+        except Exception as exc:
+            error_report = make_report(
+                agent_id,
+                "target_activity_process_observation_error",
+                target_package=config["target_package"],
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            send_report_or_spool(
+                config,
+                service,
+                spool,
+                error_report,
+            )
+
+        time.sleep(1)
 
 
 run()
