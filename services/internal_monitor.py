@@ -269,8 +269,25 @@ def inspect_activity_process(service: Any, package_name: str) -> dict[str, Any]:
 
 
 
-def recover_previous_fault_report(config: dict[str, Any], service: Any, spool: Path, agent_id: str) -> dict[str, Any] | None:
-    """Forward the last intentional-crash record on the next application start."""
+def verify_fault_report_signature(
+    report: dict[str, Any], token: str
+) -> bool:
+    """Verify the persisted crash report before forwarding it unchanged."""
+    signature = report.get("signature")
+    algorithm = report.get("signature_algorithm")
+    if not isinstance(signature, str) or algorithm != "HMAC-SHA256":
+        return False
+    expected = _sign_report(report, token)
+    return hmac.compare_digest(signature, expected)
+
+
+def recover_previous_fault_report(
+    config: dict[str, Any],
+    service: Any,
+    spool: Path,
+    agent_id: str,
+) -> dict[str, Any] | None:
+    """Forward the original signed crash object unchanged on next launch."""
     fault_path = Path(str(service.getFilesDir())) / "fault-injection-report.json"
     if not fault_path.exists():
         return None
@@ -281,6 +298,10 @@ def recover_previous_fault_report(config: dict[str, Any], service: Any, spool: P
     if not isinstance(fault_report, dict) or not fault_report.get("test_id"):
         return None
 
+    token = str(config["bridge"]["token"])
+    if not verify_fault_report_signature(fault_report, token):
+        return None
+
     marker_path = Path(str(service.getFilesDir())) / "fault-report-forwarded.json"
     try:
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
@@ -289,18 +310,24 @@ def recover_previous_fault_report(config: dict[str, Any], service: Any, spool: P
     if marker.get("test_id") == fault_report["test_id"]:
         return None
 
-    report = make_report(
-        agent_id,
-        "target_planned_crash_recovered",
-        str(config["bridge"]["token"]),
-        target_package=config["target_package"],
-        crash_report=fault_report,
-        recovery="next_application_launch",
-    )
+    report = fault_report
     ack = send_report_or_spool(config, service, spool, report)
     if ack is not None:
         try:
-            marker_path.write_text(json.dumps({"test_id": fault_report["test_id"], "report_id": report["report_id"], "forwarded_at": report["wall_time"]}, sort_keys=True), encoding="utf-8")
+            marker_path.write_text(
+                json.dumps(
+                    {
+                        "test_id": fault_report["test_id"],
+                        "report_id": fault_report.get("report_id"),
+                        "signature": fault_report.get("signature"),
+                        "forwarded_at": datetime.now(
+                            timezone.utc
+                        ).isoformat(timespec="microseconds"),
+                    },
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
         except OSError:
             pass
     return report
