@@ -493,6 +493,40 @@ def run() -> None:
         config, service, spool, agent_id
     )
 
+    if recovered_fault_report is not None:
+        restart_report = make_report(
+            agent_id,
+            "fault_report_restart_recovery",
+            str(config["bridge"]["token"]),
+            recovered_fault_report_id=recovered_fault_report.get("report_id"),
+            recovered_test_id=recovered_fault_report.get("test_id"),
+            recovered_fault_timestamp_ms=recovered_fault_report.get("timestamp_ms"),
+            restart_pid=os.getpid(),
+            message=(
+                "Base application restarted after a planned crash; "
+                "the persisted signed crash report was recovered."
+            ),
+        )
+        restart_ack = send_report_or_spool(
+            config,
+            service,
+            spool,
+            restart_report,
+        )
+        write_status(
+            service,
+            {
+                "agent": agent_id,
+                "event": "fault_report_restart_recovery",
+                "bridge_status": (
+                    "connected" if restart_ack is not None else "spooled"
+                ),
+                "restart_report_id": restart_report.get("report_id"),
+                "recovered_fault_report_id": recovered_fault_report.get("report_id"),
+                "recovered_test_id": recovered_fault_report.get("test_id"),
+            },
+        )
+
     checks = self_diagnostic(config, service)
     self_report = make_report(
         agent_id,
