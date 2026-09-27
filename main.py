@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import signal
@@ -21,6 +23,7 @@ from kivy.uix.textinput import TextInput
 
 SERVICE_CLASS = "org.blackmirror.blackmirror.ServiceInternal"
 SERVICE_LAUNCH_FLAG = "yj64.internal_agent_launch"
+BRIDGE_CONFIG_PATH = Path(__file__).resolve().parent / "config" / "bridge.json"
 
 
 class YJ64BaseApp(App):
@@ -106,9 +109,39 @@ class YJ64BaseApp(App):
         except Exception:
             pass
 
+    def _load_bridge_token(self) -> str:
+        """Load the shared bridge token used to sign persisted fault reports."""
+        config = json.loads(BRIDGE_CONFIG_PATH.read_text(encoding="utf-8"))
+        token = config["bridge"]["token"]
+        if not isinstance(token, str) or not token:
+            raise ValueError("bridge token is missing or invalid")
+        return token
+
+    @staticmethod
+    def _sign_report(report: dict[str, Any], token: str) -> str:
+        """Return an HMAC-SHA256 signature for the report without signature fields."""
+        unsigned = {
+            key: value
+            for key, value in report.items()
+            if key not in {"signature", "signature_algorithm"}
+        }
+        canonical = json.dumps(
+            unsigned,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return hmac.new(
+            token.encode("utf-8"), canonical, hashlib.sha256
+        ).hexdigest()
+
     def _run_planned_crash(self, *_: Any) -> None:
-        """Persist a deterministic crash marker, then abort this app process."""
+        """Sign and persist the original crash report, then abort this process."""
         report = {
+            "schema": "yj64.diagnostic.v1",
+            "agent": "yj64-base-application",
+            "event": "planned_crash_requested",
+            "message_id": f"INT-{uuid.uuid4().hex}",
             "event": "planned_crash_requested",
             "test": "YJ64 planned crash detection",
             "test_id": f"FAULT-{uuid.uuid4().hex}",
@@ -121,6 +154,22 @@ class YJ64BaseApp(App):
                 "Restart the base application to inspect and copy this report."
             ),
         }
+        report["report_id"] = report["message_id"]
+
+        try:
+            token = self._load_bridge_token()
+            report["signature_algorithm"] = "HMAC-SHA256"
+            report["signature"] = self._sign_report(report, token)
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            self.status.text = json.dumps(
+                {
+                    "event": "planned_crash_signing_failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+            return
 
         try:
             self.fault_report_path.write_text(
