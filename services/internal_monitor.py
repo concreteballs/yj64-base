@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import socket
@@ -48,9 +50,15 @@ def _new_message_metadata(prefix: str) -> dict[str, Any]:
     }
 
 
-def make_report(agent_id: str, event: str, **data: Any) -> dict[str, Any]:
+def _sign_report(report: dict[str, Any], token: str) -> str:
+    unsigned = {key: value for key, value in report.items() if key not in {"signature", "signature_algorithm"}}
+    canonical = json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hmac.new(token.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
+
+
+def make_report(agent_id: str, event: str, token: str, **data: Any) -> dict[str, Any]:
     metadata = _new_message_metadata("INT")
-    return {
+    report = {
         "schema": SCHEMA,
         "agent": agent_id,
         "event": event,
@@ -59,6 +67,9 @@ def make_report(agent_id: str, event: str, **data: Any) -> dict[str, Any]:
         "report_id": metadata["message_id"],
         "data": data,
     }
+    report["signature_algorithm"] = "HMAC-SHA256"
+    report["signature"] = _sign_report(report, token)
+    return report
 
 
 def append_spool(service: Any, path: Path, report: dict[str, Any]) -> None:
@@ -258,6 +269,43 @@ def inspect_activity_process(service: Any, package_name: str) -> dict[str, Any]:
 
 
 
+def recover_previous_fault_report(config: dict[str, Any], service: Any, spool: Path, agent_id: str) -> dict[str, Any] | None:
+    """Forward the last intentional-crash record on the next application start."""
+    fault_path = Path(str(service.getFilesDir())) / "fault-injection-report.json"
+    if not fault_path.exists():
+        return None
+    try:
+        fault_report = json.loads(fault_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(fault_report, dict) or not fault_report.get("test_id"):
+        return None
+
+    marker_path = Path(str(service.getFilesDir())) / "fault-report-forwarded.json"
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        marker = {}
+    if marker.get("test_id") == fault_report["test_id"]:
+        return None
+
+    report = make_report(
+        agent_id,
+        "target_planned_crash_recovered",
+        str(config["bridge"]["token"]),
+        target_package=config["target_package"],
+        crash_report=fault_report,
+        recovery="next_application_launch",
+    )
+    ack = send_report_or_spool(config, service, spool, report)
+    if ack is not None:
+        try:
+            marker_path.write_text(json.dumps({"test_id": fault_report["test_id"], "report_id": report["report_id"], "forwarded_at": report["wall_time"]}, sort_keys=True), encoding="utf-8")
+        except OSError:
+            pass
+    return report
+
+
 def execute_bridge_command(
     config: dict[str, Any],
     service: Any,
@@ -274,6 +322,7 @@ def execute_bridge_command(
         report = make_report(
             str(config["agent_id"]),
             "bridge_command_rejected",
+            str(config["bridge"]["token"]),
             command=command_type,
             command_id=command_id,
             reason="unsupported_command",
@@ -299,6 +348,7 @@ def execute_bridge_command(
     report = make_report(
         str(config["agent_id"]),
         "diagnostic_test_result",
+        str(config["bridge"]["token"]),
         **result,
     )
     write_status(
@@ -326,10 +376,13 @@ def run() -> None:
     agent_id = str(config["agent_id"])
     spool = spool_path(service, str(config["report"]["spool_filename"]))
 
+    recover_previous_fault_report(config, service, spool, agent_id)
+
     checks = self_diagnostic(config, service)
     self_report = make_report(
         agent_id,
         "self_diagnostic",
+        str(config["bridge"]["token"]),
         checks=checks,
         target_package=config["target_package"],
     )
@@ -343,6 +396,7 @@ def run() -> None:
     startup = make_report(
         agent_id,
         "internal_startup",
+        str(config["bridge"]["token"]),
         pid=os.getpid(),
         python_version=sys.version.split()[0],
         target_package=config["target_package"],
@@ -359,6 +413,7 @@ def run() -> None:
     launch_report = make_report(
         agent_id,
         "target_launch_result",
+        str(config["bridge"]["token"]),
         target_package=config["target_package"],
         success=launch_ok,
         reason=launch_reason,
@@ -409,6 +464,7 @@ def run() -> None:
                 process_report = make_report(
                     agent_id,
                     "target_activity_process_state",
+                    str(config["bridge"]["token"]),
                     target_package=config["target_package"],
                     **process_state,
                 )
@@ -423,6 +479,7 @@ def run() -> None:
             error_report = make_report(
                 agent_id,
                 "target_activity_process_observation_error",
+                str(config["bridge"]["token"]),
                 target_package=config["target_package"],
                 error_type=type(exc).__name__,
                 error=str(exc),
