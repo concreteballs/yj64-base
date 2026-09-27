@@ -583,11 +583,6 @@ def run() -> None:
                 str(config["target_package"]),
             )
             visible = bool(process_state["activity_process_visible"])
-            process_state = inspect_activity_process(
-                service,
-                str(config["target_package"]),
-            )
-            visible = bool(process_state["activity_process_visible"])
             if visible != last_activity_process_visible:
                 process_report = make_report(
                     agent_id,
