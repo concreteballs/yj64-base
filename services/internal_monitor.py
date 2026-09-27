@@ -496,7 +496,7 @@ def run() -> None:
     if recovered_fault_report is not None:
         restart_report = make_report(
             agent_id,
-            "fault_report_restart_recovery",
+            "target_planned_crash_recovered",
             str(config["bridge"]["token"]),
             recovered_fault_report_id=recovered_fault_report.get("report_id"),
             recovered_test_id=recovered_fault_report.get("test_id"),
