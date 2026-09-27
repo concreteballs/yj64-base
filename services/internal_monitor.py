@@ -372,9 +372,6 @@ def run() -> None:
         launch_report,
     )
 
-    if launch_ack and isinstance(launch_ack.get("command"), dict):
-        execute_bridge_command(config, service, spool, launch_ack["command"])
-
     write_status(
         service,
         {
@@ -395,6 +392,9 @@ def run() -> None:
             "launch_report_sent": bool(launch_ack),
         },
     )
+
+    if launch_ack and isinstance(launch_ack.get("command"), dict):
+        execute_bridge_command(config, service, spool, launch_ack["command"])
 
     last_activity_process_visible: bool | None = None
 
