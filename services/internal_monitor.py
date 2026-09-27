@@ -212,7 +212,7 @@ def send_report_or_spool(
     service: Any,
     spool: Path,
     report: dict[str, Any],
-) -> bool:
+) -> dict[str, Any] | None:
     """Prefer the external bridge and persist the report when it is unavailable."""
 
     bridge_ack = send_with_retry(config, report)
