@@ -379,7 +379,7 @@ def run() -> None:
             "event": "target_launch_result",
             "bridge_status": (
                 "connected"
-                if self_bridge_ok or startup_bridge_ok or launch_bridge_ok
+                if self_bridge_ok or startup_bridge_ok or launch_ack
                 else "spooled"
             ),
             "self_diagnostic": (
