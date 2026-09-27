@@ -2,7 +2,7 @@ name: YJ-64 Base Android APK
 
 on:
   push:
-    branches: [main, diagnostics/lifecycle-observation]
+    branches: [main, diagnostics/lifecycle-observation, fix/signed-original-crash-report]
     paths:
       - 'buildozer.spec'
       - 'main.py'
