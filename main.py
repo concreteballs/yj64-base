@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
 from kivy.app import App
 from kivy.clock import Clock
+from kivy.core.clipboard import Clipboard
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
 
@@ -21,6 +27,9 @@ class YJ64BaseApp(App):
     """Minimal target application used to validate the embedded agent."""
 
     def build(self):
+        self.fault_report_path = (
+            Path(self.user_data_dir) / "fault-injection-report.json"
+        )
         self.status = TextInput(
             text="Starting embedded diagnostic agent...",
             readonly=True,
@@ -39,10 +48,109 @@ class YJ64BaseApp(App):
         )
         root.add_widget(self.status)
 
+        test_button = Button(
+            text="TEST: planned crash",
+            size_hint_y=None,
+            height=72,
+        )
+        test_button.bind(on_release=self._run_planned_crash)
+        root.add_widget(test_button)
+
+        copy_button = Button(
+            text="Copy diagnostic report",
+            size_hint_y=None,
+            height=64,
+        )
+        copy_button.bind(on_release=self._copy_diagnostic_report)
+        root.add_widget(copy_button)
+
+        self._load_previous_fault_report()
         Clock.schedule_once(self._ensure_service_started, 0.5)
         Clock.schedule_interval(self._refresh_status, 1.0)
         return root
 
+
+    def _load_previous_fault_report(self) -> None:
+        """Show the last planned-crash report after a test restart."""
+        if not self.fault_report_path.exists():
+            return
+
+        try:
+            report = json.loads(
+                self.fault_report_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            return
+
+        self.status.text = json.dumps(
+            {
+                "previous_fault_injection_report": report,
+                "message": (
+                    "Previous planned-crash report is preserved. "
+                    "Press Copy diagnostic report to copy it."
+                ),
+            },
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+
+    def _copy_diagnostic_report(self, *_: Any) -> None:
+        """Copy the persisted diagnostic report to the clipboard."""
+        try:
+            if self.fault_report_path.exists():
+                report = self.fault_report_path.read_text(encoding="utf-8")
+            else:
+                report = self.status.text
+            Clipboard.copy(report)
+        except Exception:
+            pass
+
+    def _run_planned_crash(self, *_: Any) -> None:
+        """Persist a deterministic crash marker, then abort this app process."""
+        report = {
+            "event": "planned_crash_requested",
+            "test": "YJ64 planned crash detection",
+            "test_id": f"FAULT-{uuid.uuid4().hex}",
+            "timestamp_ms": int(time.time() * 1000),
+            "monotonic_ns": time.monotonic_ns(),
+            "pid": os.getpid(),
+            "signal": "SIGABRT",
+            "message": "The test button requested an intentional process abort.",
+            "next_step": (
+                "Restart the base application to inspect and copy this report."
+            ),
+        }
+
+        try:
+            self.fault_report_path.write_text(
+                json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            with self.fault_report_path.open("r+b") as handle:
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as exc:
+            self.status.text = json.dumps(
+                {
+                    "event": "planned_crash_persistence_failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+            return
+
+        self.status.text = json.dumps(
+            report,
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        Clock.schedule_once(
+            lambda *_args: os.kill(os.getpid(), signal.SIGABRT),
+            0.1,
+        )
 
     def _write_runtime_event(self, event: str) -> None:
         """Persist an explicit Activity lifecycle event for diagnostics."""
@@ -50,7 +158,7 @@ class YJ64BaseApp(App):
             path = Path(self.user_data_dir) / "base-runtime-events.jsonl"
             record = {
                 "event": event,
-                "timestamp_ms": int(__import__("time").time() * 1000),
+                "timestamp_ms": int(time.time() * 1000),
             }
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, sort_keys=True) + "\n")
@@ -113,6 +221,15 @@ class YJ64BaseApp(App):
         except (OSError, ValueError):
             return
 
+        previous_fault_report = None
+        if self.fault_report_path.exists():
+            try:
+                previous_fault_report = json.loads(
+                    self.fault_report_path.read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError):
+                previous_fault_report = None
+
         self.status.text = json.dumps(
             {
                 "event": data.get("event", "unknown"),
@@ -121,6 +238,7 @@ class YJ64BaseApp(App):
                 "last_command": data.get("last_command"),
                 "diagnostic_test": data.get("diagnostic_test"),
                 "last_report": data.get("last_report"),
+                "previous_fault_injection_report": previous_fault_report,
             },
             indent=2,
             sort_keys=True,
