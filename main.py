@@ -270,6 +270,23 @@ class YJ64BaseApp(App):
         except (OSError, ValueError):
             return
 
+        status_history = []
+        history_path = Path(self.user_data_dir) / "diagnostic-agent-status.jsonl"
+        if history_path.exists():
+            try:
+                lines = [
+                    line
+                    for line in history_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                for line in lines[-20:]:
+                    try:
+                        status_history.append(json.loads(line))
+                    except ValueError:
+                        continue
+            except OSError:
+                status_history = []
+
         previous_fault_report = None
         if self.fault_report_path.exists():
             try:
@@ -288,6 +305,7 @@ class YJ64BaseApp(App):
                 "diagnostic_test": data.get("diagnostic_test"),
                 "last_report": data.get("last_report"),
                 "previous_fault_injection_report": previous_fault_report,
+                "status_history": status_history,
             },
             indent=2,
             sort_keys=True,
