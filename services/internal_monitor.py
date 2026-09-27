@@ -28,8 +28,26 @@ def load_config() -> dict[str, Any]:
 
 
 def write_status(service: Any, payload: dict[str, Any]) -> None:
-    path = Path(str(service.getFilesDir())) / "diagnostic-agent-status.json"
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    """Persist current status and append an immutable status-history record."""
+    files_dir = Path(str(service.getFilesDir()))
+    path = files_dir / "diagnostic-agent-status.json"
+    history_path = files_dir / "diagnostic-agent-status.jsonl"
+    record = {
+        "recorded_at_wall_time": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+        "recorded_monotonic_ns": time.monotonic_ns(),
+        **payload,
+    }
+    try:
+        with history_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n"
+            )
+    except OSError:
+        pass
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 def spool_path(service: Any, filename: str) -> Path:
