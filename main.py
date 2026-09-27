@@ -10,6 +10,7 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
+from kivy.uix.textinput import TextInput
 
 
 SERVICE_CLASS = "org.blackmirror.blackmirror.ServiceInternal"
@@ -20,13 +21,12 @@ class YJ64BaseApp(App):
     """Minimal target application used to validate the embedded agent."""
 
     def build(self):
-        self.status = Label(
+        self.status = TextInput(
             text="Starting embedded diagnostic agent...",
+            readonly=True,
+            multiline=True,
             halign="left",
-            valign="top",
-        )
-        self.status.bind(
-            size=lambda instance, value: setattr(instance, "text_size", value)
+            size_hint_y=1,
         )
 
         root = BoxLayout(orientation="vertical", padding=24, spacing=16)
@@ -113,12 +113,18 @@ class YJ64BaseApp(App):
         except (OSError, ValueError):
             return
 
-        self.status.text = (
-            "Embedded diagnostic agent\n"
-            f"Bridge: {data.get('bridge_status', 'unknown')}\n"
-            f"Self-diagnostic: {data.get('self_diagnostic', 'unknown')}\n"
-            f"Base app: {data.get('target_launch', 'unknown')}\n"
-            f"Last event: {data.get('event', 'unknown')}"
+        self.status.text = json.dumps(
+            {
+                "event": data.get("event", "unknown"),
+                "bridge_status": data.get("bridge_status", "unknown"),
+                "target_launch": data.get("target_launch", "unknown"),
+                "last_command": data.get("last_command"),
+                "diagnostic_test": data.get("diagnostic_test"),
+                "last_report": data.get("last_report"),
+            },
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
         )
 
 
