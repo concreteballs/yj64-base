@@ -300,6 +300,16 @@ def recover_previous_fault_report(
 
     token = str(config["bridge"]["token"])
     if not verify_fault_report_signature(fault_report, token):
+        write_status(
+            service,
+            {
+                "agent": agent_id,
+                "event": "fault_report_signature_invalid",
+                "bridge_status": "not_sent",
+                "report_id": fault_report.get("report_id"),
+                "test_id": fault_report.get("test_id"),
+            },
+        )
         return None
 
     marker_path = Path(str(service.getFilesDir())) / "fault-report-forwarded.json"
@@ -310,27 +320,85 @@ def recover_previous_fault_report(
     if marker.get("test_id") == fault_report["test_id"]:
         return None
 
-    report = fault_report
-    ack = send_report_or_spool(config, service, spool, report)
-    if ack is not None:
-        try:
-            marker_path.write_text(
-                json.dumps(
-                    {
-                        "test_id": fault_report["test_id"],
-                        "report_id": fault_report.get("report_id"),
-                        "signature": fault_report.get("signature"),
-                        "forwarded_at": datetime.now(
-                            timezone.utc
-                        ).isoformat(timespec="microseconds"),
-                    },
-                    sort_keys=True,
-                ),
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
-    return report
+    write_status(
+        service,
+        {
+            "agent": agent_id,
+            "event": "fault_report_recovery_pending",
+            "bridge_status": "pending",
+            "report_id": fault_report.get("report_id"),
+            "test_id": fault_report.get("test_id"),
+        },
+    )
+    return fault_report
+
+
+def forward_recovered_fault_report(
+    config: dict[str, Any],
+    service: Any,
+    spool: Path,
+    agent_id: str,
+    fault_report: dict[str, Any],
+) -> bool:
+    """Retry the exact persisted signed crash object until the bridge ACKs it."""
+    marker_path = Path(str(service.getFilesDir())) / "fault-report-forwarded.json"
+    test_id = fault_report.get("test_id")
+    if not isinstance(test_id, str) or not test_id:
+        return False
+
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        marker = {}
+    if marker.get("test_id") == test_id:
+        return True
+
+    ack = send_with_retry(config, fault_report)
+    if ack is None:
+        write_status(
+            service,
+            {
+                "agent": agent_id,
+                "event": "fault_report_recovery_pending",
+                "bridge_status": "unavailable",
+                "report_id": fault_report.get("report_id"),
+                "test_id": test_id,
+            },
+        )
+        return False
+
+    try:
+        marker_path.write_text(
+            json.dumps(
+                {
+                    "test_id": test_id,
+                    "report_id": fault_report.get("report_id"),
+                    "signature": fault_report.get("signature"),
+                    "forwarded_at": datetime.now(
+                        timezone.utc
+                    ).isoformat(timespec="microseconds"),
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        return False
+
+    write_status(
+        service,
+        {
+            "agent": agent_id,
+            "event": "fault_report_recovered_and_forwarded",
+            "bridge_status": "connected",
+            "report_id": fault_report.get("report_id"),
+            "test_id": test_id,
+            "ack_message_id": ack.get("ack_message_id"),
+            "ack_wall_time": ack.get("ack_wall_time"),
+            "client_received_wall_time": ack.get("client_received_wall_time"),
+        },
+    )
+    return True
 
 
 def execute_bridge_command(
@@ -403,7 +471,9 @@ def run() -> None:
     agent_id = str(config["agent_id"])
     spool = spool_path(service, str(config["report"]["spool_filename"]))
 
-    recover_previous_fault_report(config, service, spool, agent_id)
+    recovered_fault_report = recover_previous_fault_report(
+        config, service, spool, agent_id
+    )
 
     checks = self_diagnostic(config, service)
     self_report = make_report(
@@ -479,9 +549,40 @@ def run() -> None:
         execute_bridge_command(config, service, spool, launch_ack["command"])
 
     last_activity_process_visible: bool | None = None
+    recovery_attempts = 0
 
     while True:
         try:
+            if recovered_fault_report is not None:
+                recovery_attempts += 1
+                if forward_recovered_fault_report(
+                    config,
+                    service,
+                    spool,
+                    agent_id,
+                    recovered_fault_report,
+                ):
+                    recovered_fault_report = None
+                    recovery_attempts = 0
+                elif recovery_attempts >= 20:
+                    write_status(
+                        service,
+                        {
+                            "agent": agent_id,
+                            "event": "fault_report_recovery_still_pending",
+                            "bridge_status": "unavailable",
+                            "report_id": recovered_fault_report.get("report_id"),
+                            "test_id": recovered_fault_report.get("test_id"),
+                            "attempts": recovery_attempts,
+                        },
+                    )
+                    recovery_attempts = 0
+
+            process_state = inspect_activity_process(
+                service,
+                str(config["target_package"]),
+            )
+            visible = bool(process_state["activity_process_visible"])
             process_state = inspect_activity_process(
                 service,
                 str(config["target_package"]),
