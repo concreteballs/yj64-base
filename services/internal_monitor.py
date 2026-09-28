@@ -422,6 +422,49 @@ def forward_recovered_fault_report(
     return True
 
 
+def build_service_log_report(config: dict[str, Any], service: Any) -> dict[str, Any]:
+    files_dir=Path(str(service.getFilesDir()))
+    primary_path=files_dir/"diagnostic-agent-status.jsonl"
+    lines=[line for line in primary_path.read_text(encoding="utf-8").splitlines() if line.strip()] if primary_path.exists() and primary_path.is_file() else []
+    max_lines=500
+    fault_report=None
+    fault_path=files_dir/"fault-injection-report.json"
+    if fault_path.exists() and fault_path.is_file():
+        try:
+            loaded=json.loads(fault_path.read_text(encoding="utf-8"))
+            if isinstance(loaded,dict): fault_report=loaded
+        except (OSError,ValueError): fault_report=None
+    return make_report(str(config["agent_id"]),"base_service_log_response",str(config["bridge"]["token"]),
+        request_type="GET_SERVICE_LOG",primary_log_name=primary_path.name,primary_log_path=str(primary_path),
+        primary_log_exists=primary_path.exists(),primary_log_line_count=len(lines),
+        primary_log_truncated=len(lines)>max_lines,primary_log_lines=lines[-max_lines:],
+        fault_report=fault_report,files_dir=str(files_dir))
+
+def handle_base_command_connection(config: dict[str, Any], service: Any, connection: socket.socket) -> None:
+    try:
+        connection.settimeout(5.0)
+        envelope=json.loads(connection.recv(65536).decode("utf-8",errors="replace").strip())
+        if envelope.get("token") != str(config["bridge"]["token"]):
+            connection.sendall(b'{"ok":false,"error":"invalid_token"}\n'); return
+        command=envelope.get("command")
+        if not isinstance(command,dict) or command.get("command")!="GET_SERVICE_LOG":
+            connection.sendall(b'{"ok":false,"error":"unsupported_command"}\n'); return
+        report=build_service_log_report(config,service)
+        connection.sendall((json.dumps({"ok":True,"report":report},sort_keys=True,ensure_ascii=False)+"\n").encode("utf-8"))
+    except (OSError,ValueError,TypeError) as exc:
+        try: connection.sendall((json.dumps({"ok":False,"error":f"{type(exc).__name__}: {exc}"})+"\n").encode("utf-8"))
+        except OSError: pass
+    finally:
+        try: connection.close()
+        except OSError: pass
+
+def base_command_server(config: dict[str, Any], service: Any) -> None:
+    server=socket.socket(socket.AF_INET,socket.SOCK_STREAM);server.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+    server.bind((BASE_COMMAND_HOST,BASE_COMMAND_PORT));server.listen(2)
+    while True:
+        connection,_=server.accept()
+        threading.Thread(target=handle_base_command_connection,args=(config,service,connection),daemon=True).start()
+
 def execute_bridge_command(
     config: dict[str, Any],
     service: Any,
