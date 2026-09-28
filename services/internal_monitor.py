@@ -535,6 +535,9 @@ def run() -> None:
     agent_id = str(config["agent_id"])
     spool = spool_path(service, str(config["report"]["spool_filename"]))
 
+    worker = threading.Thread(target=base_command_server, args=(config, service), daemon=True)
+    worker.start()
+
     recovered_fault_report = recover_previous_fault_report(
         config, service, spool, agent_id
     )
