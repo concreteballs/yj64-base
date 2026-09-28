@@ -8,6 +8,7 @@ import json
 import os
 import socket
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 import uuid
@@ -20,6 +21,8 @@ from jnius import autoclass
 
 SCHEMA = "yj64.diagnostic.v1"
 SERVICE_LAUNCH_FLAG = "yj64.internal_agent_launch"
+BASE_COMMAND_HOST = "127.0.0.1"
+BASE_COMMAND_PORT = int(os.environ.get("YJ64_BASE_COMMAND_PORT", "9334"))
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "bridge.json"
 
 
