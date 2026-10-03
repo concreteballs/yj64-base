@@ -53,8 +53,27 @@ def write_status(service: Any, payload: dict[str, Any]) -> None:
     )
 
 
+def report_dir(service: Any) -> Path:
+    path = Path(str(service.getFilesDir())) / "yj64-reports"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def spool_path(service: Any, filename: str) -> Path:
-    return Path(str(service.getFilesDir())) / filename
+    return report_dir(service) / filename
+
+
+def primary_report_path(service: Any) -> Path:
+    return report_dir(service) / "yj64-report.jsonl"
+
+
+def append_primary_report(service: Any, report: dict[str, Any]) -> None:
+    path = primary_report_path(service)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(report, sort_keys=True, ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 _report_sequence = 0
@@ -247,6 +266,7 @@ def send_report_or_spool(
 ) -> dict[str, Any] | None:
     """Prefer the external bridge and persist the report when it is unavailable."""
 
+    append_primary_report(service, report)
     bridge_ack = send_with_retry(config, report)
     if bridge_ack is None:
         append_spool(service, spool, report)
@@ -309,7 +329,7 @@ def recover_previous_fault_report(
     agent_id: str,
 ) -> dict[str, Any] | None:
     """Forward the original signed crash object unchanged on next launch."""
-    fault_path = Path(str(service.getFilesDir())) / "fault-injection-report.json"
+    fault_path = report_dir(service) / "fault-injection-report.json"
     if not fault_path.exists():
         return None
     try:
@@ -333,7 +353,7 @@ def recover_previous_fault_report(
         )
         return None
 
-    marker_path = Path(str(service.getFilesDir())) / "fault-report-forwarded.json"
+    marker_path = report_dir(service) / "fault-report-forwarded.json"
     try:
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -362,7 +382,7 @@ def forward_recovered_fault_report(
     fault_report: dict[str, Any],
 ) -> bool:
     """Retry the exact persisted signed crash object until the bridge ACKs it."""
-    marker_path = Path(str(service.getFilesDir())) / "fault-report-forwarded.json"
+    marker_path = report_dir(service) / "fault-report-forwarded.json"
     test_id = fault_report.get("test_id")
     if not isinstance(test_id, str) or not test_id:
         return False
@@ -423,8 +443,8 @@ def forward_recovered_fault_report(
 
 
 def build_service_log_report(config: dict[str, Any], service: Any) -> dict[str, Any]:
-    files_dir=Path(str(service.getFilesDir()))
-    primary_path=files_dir/"diagnostic-agent-status.jsonl"
+    files_dir=report_dir(service)
+    primary_path=files_dir/"yj64-report.jsonl"
     lines=[line for line in primary_path.read_text(encoding="utf-8").splitlines() if line.strip()] if primary_path.exists() and primary_path.is_file() else []
     max_lines=500
     fault_report=None
@@ -436,6 +456,7 @@ def build_service_log_report(config: dict[str, Any], service: Any) -> dict[str, 
         except (OSError,ValueError): fault_report=None
     return make_report(str(config["agent_id"]),"base_service_log_response",str(config["bridge"]["token"]),
         request_type="GET_SERVICE_LOG",primary_log_name=primary_path.name,primary_log_path=str(primary_path),
+        report_archive_path=str(files_dir/"yj64-diagnostics.zip"),
         primary_log_exists=primary_path.exists(),primary_log_line_count=len(lines),
         primary_log_truncated=len(lines)>max_lines,primary_log_lines=lines[-max_lines:],
         fault_report=fault_report,files_dir=str(files_dir))
@@ -533,6 +554,14 @@ def run() -> None:
 
     config = load_config()
     agent_id = str(config["agent_id"])
+    reports = report_dir(service)
+    write_status(service, {
+        "agent": agent_id,
+        "event": "report_storage_ready",
+        "report_path": str(primary_report_path(service)),
+        "archive_path": str(reports / "yj64-diagnostics.zip"),
+        "files_dir": str(reports),
+    })
     spool = spool_path(service, str(config["report"]["spool_filename"]))
 
     worker = threading.Thread(target=base_command_server, args=(config, service), daemon=True)
