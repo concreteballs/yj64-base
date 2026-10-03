@@ -30,9 +30,11 @@ class YJ64BaseApp(App):
     """Minimal target application used to validate the embedded agent."""
 
     def build(self):
-        self.fault_report_path = (
-            Path(self.user_data_dir) / "fault-injection-report.json"
-        )
+        self.report_dir = Path(self.user_data_dir) / "yj64-reports"
+        self.report_dir.mkdir(parents=True, exist_ok=True)
+        self.report_path = self.report_dir / "yj64-report.jsonl"
+        self.archive_path = self.report_dir / "yj64-diagnostics.zip"
+        self.fault_report_path = self.report_dir / "fault-injection-report.json"
         self.status = TextInput(
             text="Starting embedded diagnostic agent...",
             readonly=True,
@@ -50,6 +52,22 @@ class YJ64BaseApp(App):
             )
         )
         root.add_widget(self.status)
+
+        path_button = Button(
+            text="Copy report path",
+            size_hint_y=None,
+            height=64,
+        )
+        path_button.bind(on_release=self._copy_report_path)
+        root.add_widget(path_button)
+
+        archive_button = Button(
+            text="Create diagnostic archive",
+            size_hint_y=None,
+            height=64,
+        )
+        archive_button.bind(on_release=self._create_diagnostic_archive)
+        root.add_widget(archive_button)
 
         test_button = Button(
             text="TEST: planned crash",
@@ -73,6 +91,41 @@ class YJ64BaseApp(App):
         return root
 
 
+    def _copy_report_path(self, *_: Any) -> None:
+        Clipboard.copy(str(self.report_path))
+        self.status.text = (
+            "Report path copied:\n"
+            f"{self.report_path}\n\n"
+            "Archive path:\n"
+            f"{self.archive_path}"
+        )
+
+    def _create_diagnostic_archive(self, *_: Any) -> None:
+        import zipfile
+
+        try:
+            self.report_dir.mkdir(parents=True, exist_ok=True)
+            files = [
+                path for path in self.report_dir.iterdir()
+                if path.is_file() and path.name != self.archive_path.name
+            ]
+            with zipfile.ZipFile(
+                self.archive_path, "w", zipfile.ZIP_DEFLATED
+            ) as archive:
+                for path in files:
+                    archive.write(path, arcname=path.name)
+            Clipboard.copy(str(self.archive_path))
+            self.status.text = (
+                "Archive created. Its absolute path was copied:\n"
+                f"{self.archive_path}"
+            )
+        except OSError as exc:
+            self.status.text = (
+                f"Archive creation failed: {type(exc).__name__}: {exc}\n\n"
+                f"Report path:\n{self.report_path}\n\n"
+                f"Archive path:\n{self.archive_path}"
+            )
+
     def _load_previous_fault_report(self) -> None:
         """Show the last planned-crash report after a test restart."""
         if not self.fault_report_path.exists():
@@ -90,8 +143,10 @@ class YJ64BaseApp(App):
                 "previous_fault_injection_report": report,
                 "message": (
                     "Previous planned-crash report is preserved. "
-                    "Press Copy diagnostic report to copy it."
+                    "The complete report journal is available for copying."
                 ),
+                "report_path": str(self.report_path),
+                "archive_path": str(self.archive_path),
             },
             indent=2,
             sort_keys=True,
@@ -101,12 +156,13 @@ class YJ64BaseApp(App):
     def _copy_diagnostic_report(self, *_: Any) -> None:
         """Copy the persisted diagnostic report to the clipboard."""
         try:
-            if self.fault_report_path.exists():
-                report = self.fault_report_path.read_text(encoding="utf-8")
-            else:
-                report = self.status.text
+            report = (
+                self.report_path.read_text(encoding="utf-8")
+                if self.report_path.exists()
+                else self.status.text
+            )
             Clipboard.copy(report)
-        except Exception:
+        except OSError:
             pass
 
     def _load_bridge_token(self) -> str:
@@ -142,7 +198,6 @@ class YJ64BaseApp(App):
             "agent": "yj64-base-application",
             "event": "planned_crash_requested",
             "message_id": f"INT-{uuid.uuid4().hex}",
-            "event": "planned_crash_requested",
             "test": "YJ64 planned crash detection",
             "test_id": f"FAULT-{uuid.uuid4().hex}",
             "timestamp_ms": int(time.time() * 1000),
@@ -191,7 +246,11 @@ class YJ64BaseApp(App):
             return
 
         self.status.text = json.dumps(
-            report,
+            {
+                **report,
+                "report_path": str(self.report_path),
+                "archive_path": str(self.archive_path),
+            },
             indent=2,
             sort_keys=True,
             ensure_ascii=False,
@@ -201,18 +260,27 @@ class YJ64BaseApp(App):
             0.1,
         )
 
-    def _write_runtime_event(self, event: str) -> None:
-        """Persist an explicit Activity lifecycle event for diagnostics."""
+    def _append_report_event(self, event: str, **data: Any) -> None:
+        record = {
+            "schema": "yj64.diagnostic.v1",
+            "agent": "yj64-base-application",
+            "event": event,
+            "message_id": f"APP-{uuid.uuid4().hex}",
+            "timestamp_ms": int(time.time() * 1000),
+            "monotonic_ns": time.monotonic_ns(),
+            "data": data,
+        }
         try:
-            path = Path(self.user_data_dir) / "base-runtime-events.jsonl"
-            record = {
-                "event": event,
-                "timestamp_ms": int(time.time() * 1000),
-            }
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record, sort_keys=True) + "\n")
+            self.report_dir.mkdir(parents=True, exist_ok=True)
+            with self.report_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
         except OSError:
             pass
+
+    def _write_runtime_event(self, event: str) -> None:
+        self._append_report_event(event)
 
     def on_start(self) -> None:
         self._write_runtime_event("base_activity_started")
@@ -306,6 +374,8 @@ class YJ64BaseApp(App):
                 "last_report": data.get("last_report"),
                 "previous_fault_injection_report": previous_fault_report,
                 "status_history": status_history,
+                "report_path": str(self.report_path),
+                "archive_path": str(self.archive_path),
             },
             indent=2,
             sort_keys=True,
