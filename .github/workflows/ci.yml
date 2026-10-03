@@ -1,4 +1,5 @@
 name: YJ-64 Base Build
+# Guarded build: guard must pass before APK compilation
 
 on:
   workflow_dispatch:
