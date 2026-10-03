@@ -58,12 +58,21 @@ def main() -> None:
     if len(crash_methods) != 1:
         fail("expected exactly one _run_planned_crash method")
 
-    event_keys = []
+    report_dicts = []
     for node in ast.walk(crash_methods[0]):
         if isinstance(node, ast.Dict):
-            for key in node.keys:
-                if isinstance(key, ast.Constant) and key.value == "event":
-                    event_keys.append(key)
+            names = {
+                key.value for key in node.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+            if "test_id" in names and "event" in names:
+                report_dicts.append(node)
+    if len(report_dicts) != 1:
+        fail("expected exactly one planned-crash report dictionary")
+    event_keys = [
+        key for key in report_dicts[0].keys
+        if isinstance(key, ast.Constant) and key.value == "event"
+    ]
     if len(event_keys) != 1:
         fail('planned crash report must contain exactly one "event" key')
 
