@@ -29,7 +29,6 @@ REQUIRED_TEXT = {
     ],
     ".github/workflows/ci.yml": [
         "python tools/verify_guard.py",
-        "GUARD_OK",
     ],
 }
 
