@@ -172,7 +172,12 @@ class YJ64BaseApp(App):
             try:
                 from llm_api import test_llm_api
 from llm_settings import LLMSettingsPopup
-                result = test_llm_api(self.user_data_dir)
+                result = test_llm_api(
+                    self.user_data_dir,
+                    report=lambda event, **data: self._append_report(
+                        "llm_api_" + event, **data
+                    ),
+                )
                 report = (
                     "YJ-64 LLM API TEST\n"
                     f"Provider: {result['provider']}\n"
