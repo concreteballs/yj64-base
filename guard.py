@@ -20,6 +20,27 @@ MONITOR_PROCESS_NEW = "PROCESS = ':monitor_ui'"
 WORKFLOW_TRIGGER_OLD = "      - '.github/workflows/android-apk.yml'\n"
 WORKFLOW_TRIGGER_NEW = "      - '.github/workflows/android-apk.yml'\n      - 'p4a/**'\n      - 'guard.py'\n"
 
+MONITOR_ACTIVITY_OLD = '''<activity android:name="org.blackmirror.blackmirror.MonitorActivity"
+    android:process=":service_internal"
+    android:exported="false"
+    android:label="YJ-64 Internal Monitor" />'''
+MONITOR_ACTIVITY_NEW = '''<activity android:name="org.blackmirror.blackmirror.MonitorActivity"
+    android:process=":monitor_ui"
+    android:exported="false"
+    android:label="YJ-64 Internal Monitor"
+    android:taskAffinity="org.blackmirror.blackmirror.monitor"
+    android:launchMode="singleTask" />'''
+
+MONITOR_LAUNCH_OLD = '''            intent.addFlags(0x10000000)
+            activity.startActivity(intent)'''
+MONITOR_LAUNCH_NEW = '''            # Keep the monitor in its own Android task.  The base app task
+            # remains alive in the background and can be returned to from Recents.
+            intent.addFlags(
+                0x10000000  # FLAG_ACTIVITY_NEW_TASK
+                | 0x00020000  # FLAG_ACTIVITY_REORDER_TO_FRONT
+            )
+            activity.startActivity(intent)'''
+
 def verify_one_match(text: str, old: str) -> None:
     count = text.count(old)
     if count != 1:
