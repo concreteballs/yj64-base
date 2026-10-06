@@ -52,10 +52,17 @@ def load_config(user_data_dir: str | Path) -> dict[str, str]:
     }
 
 
-def test_llm_api(user_data_dir: str | Path) -> dict[str, Any]:
+def _report(report: Any, event: str, **data: Any) -> None:
+    if report is not None:
+        report(event, **data)
+
+
+def test_llm_api(user_data_dir: str | Path, report: Any = None) -> dict[str, Any]:
+    _report(report, "api_config_loaded")
     config = load_config(user_data_dir)
     provider = config["provider"].strip().lower()
     key = config["api_key"].strip()
+    _report(report, "api_key_check", configured=bool(key))
     if not key:
         raise RuntimeError("LLM API key is not configured")
 
@@ -66,12 +73,16 @@ def test_llm_api(user_data_dir: str | Path) -> dict[str, Any]:
             base = base[:-len("/responses")]
         elif base.endswith("/chat/completions"):
             base = base[:-len("/chat/completions")]
+        _report(report, "api_request_started", provider=provider, endpoint=base + "/models")
         data = _request("GET", base + "/models", {"Authorization": f"Bearer {key}"})
+        _report(report, "api_request_succeeded", provider=provider)
         models = data.get("data", []) if isinstance(data, dict) else []
         ids = [str(x.get("id")) for x in models if isinstance(x, dict) and x.get("id")]
     elif provider in {"gemini", "google", "google-gemini"}:
         endpoint = (config["endpoint"] or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+        _report(report, "api_request_started", provider=provider, endpoint=endpoint + "/models")
         data = _request("GET", endpoint + "/models", {"x-goog-api-key": key})
+        _report(report, "api_request_succeeded", provider=provider)
         models = data.get("models", []) if isinstance(data, dict) else []
         ids = []
         for item in models:
@@ -86,4 +97,5 @@ def test_llm_api(user_data_dir: str | Path) -> dict[str, Any]:
         result = f"API reachable and key accepted; configured model not listed: {model}"
     else:
         result = f"API reachable and key accepted; models visible: {len(ids)}"
+    _report(report, "api_test_completed", provider=config["provider"], model=model, result=result)
     return {"provider": config["provider"], "model": model, "result": result}
