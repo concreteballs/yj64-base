@@ -131,7 +131,7 @@ class YJ64BaseApp(App):
         self._append_report("llm_api_test_started")
         self.status.text = "Testing LLM API connection..."
 
-        def run_test(*_args: Any) -> None:
+        def run_test() -> None:
             try:
                 from llm_api import test_llm_api
                 result = test_llm_api(self.user_data_dir)
@@ -141,11 +141,13 @@ class YJ64BaseApp(App):
                     f"Model: {result['model']}\n"
                     f"Result: {result['result']}"
                 )
-                self._append_report(
+                event = (
                     "llm_api_test_succeeded",
-                    provider=result["provider"],
-                    model=result["model"],
-                    result=result["result"],
+                    {
+                        "provider": result["provider"],
+                        "model": result["model"],
+                        "result": result["result"],
+                    },
                 )
             except Exception as exc:
                 report = (
@@ -153,15 +155,23 @@ class YJ64BaseApp(App):
                     "Result: FAILED\n"
                     f"Error: {type(exc).__name__}: {exc}"
                 )
-                self._append_report(
+                event = (
                     "llm_api_test_failed",
-                    error_type=type(exc).__name__,
-                    error=str(exc),
+                    {
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
                 )
-            self._copy_to_clipboard(report)
-            self.status.text = report
 
-        Clock.schedule_once(run_test, 0)
+            def finish(*_args: Any) -> None:
+                self._append_report(event[0], **event[1])
+                self._copy_to_clipboard(report)
+                self.status.text = report
+
+            Clock.schedule_once(finish, 0)
+
+        from threading import Thread
+        Thread(target=run_test, name="yj64-llm-api-test", daemon=True).start()
 
     def _copy_to_clipboard(self, text: str) -> None:
         try:
