@@ -139,3 +139,6 @@ LLM_API_REPORT_STAGES = (
 )
 LLM_MAIN_API_CALL_OLD = "                result = test_llm_api(self.user_data_dir)\n"
 LLM_MAIN_API_CALL_NEW = "                result = test_llm_api(\n                    self.user_data_dir,\n                    report=lambda event, **data: self._append_report(\n                        \"llm_api_\" + event, **data\n                    ),\n                )\n"
+
+LLM_MAIN_TEST_IMPORT_BROKEN = "                from llm_api import test_llm_api\nfrom llm_settings import LLMSettingsPopup\n"
+LLM_MAIN_TEST_IMPORT_FIXED = "                from llm_api import test_llm_api\n"
