@@ -81,3 +81,15 @@ LLM_MAIN_SETTINGS_IMPORT_OLD = "from llm_api import test_llm_api\\n"
 LLM_MAIN_SETTINGS_IMPORT_NEW = "from llm_api import test_llm_api\\nfrom llm_settings import LLMSettingsPopup\\n"
 LLM_OPEN_SETTINGS_OLD = "    def _open_llm_settings(self, *_: Any) -> None:\\n        popup = LLMSettingsPopup(self.user_data_dir, on_test=self._test_llm_api)\\n        popup.open()\\n\\n"
 LLM_OPEN_SETTINGS_NEW = """    def _open_llm_settings(self, *_: Any) -> None:\n        self._append_report("llm_settings_open_requested")\n        try:\n            self._append_report("llm_settings_import_started")\n            from llm_settings import LLMSettingsPopup\n            self._append_report("llm_settings_import_succeeded")\n            popup = LLMSettingsPopup(\n                self.user_data_dir,\n                on_test=self._test_llm_api,\n            )\n            self._append_report("llm_settings_popup_created")\n            popup.open()\n            self._append_report("llm_settings_popup_opened")\n        except Exception as exc:\n            import traceback\n            self._append_report(\n                "llm_settings_open_failed",\n                error_type=type(exc).__name__,\n                error=str(exc),\n                traceback=traceback.format_exc(),\n            )\n            self.status.text = (\n                "LLM settings failed: "\n                f"{type(exc).__name__}: {exc}"\n            )\n\n"""
+
+LLM_SETTINGS_REPORT_OLD = "        on_test: Callable[[], None] | None = None,\n        **kwargs: Any,\n"
+LLM_SETTINGS_REPORT_NEW = "        on_test: Callable[[], None] | None = None,\n        on_report: Callable[[str], None] | None = None,\n        **kwargs: Any,\n"
+LLM_SETTINGS_REPORT_INIT_OLD = "        self.on_test = on_test\n        config = load_config(self.user_data_dir)\n"
+LLM_SETTINGS_REPORT_INIT_NEW = "        self.on_test = on_test\n        self.on_report = on_report\n        self._report(\"settings_init_started\")\n        config = load_config(self.user_data_dir)\n        self._report(\"settings_config_loaded\")\n"
+LLM_SETTINGS_REPORT_METHOD = """    def _report(self, event: str) -> None:
+        if self.on_report is not None:
+            self.on_report(event)
+
+"""
+LLM_SETTINGS_SAVE_OLD = "    def _save(self, *_: Any) -> None:\n        save_config(\n"
+LLM_SETTINGS_SAVE_NEW = "    def _save(self, *_: Any) -> None:\n        self._report(\"settings_save_started\")\n        try:\n            save_config(\n"
