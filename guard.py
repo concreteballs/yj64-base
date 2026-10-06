@@ -151,3 +151,210 @@ LLM_MAIN_API_CALL_NEW = "                result = test_llm_api(\n               
 
 LLM_MAIN_TEST_IMPORT_BROKEN = "                from llm_api import test_llm_api\nfrom llm_settings import LLMSettingsPopup\n"
 LLM_MAIN_TEST_IMPORT_FIXED = "                from llm_api import test_llm_api\n"
+
+LLM_API_REQUEST_OLD = "def _request(method: str, url: str, headers: dict[str, str], timeout: float = 30.0) -> dict[str, Any]:\n"
+LLM_API_REQUEST_NEW = """def _request(
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    timeout: float = 30.0,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        context = ssl.create_default_context()
+        try:
+            import certifi
+            context = ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            pass
+        body = None
+        request_headers = {"Accept": "application/json", **headers}
+        if payload is not None:
+            body = json.dumps(payload).encode("utf-8")
+            request_headers["Content-Type"] = "application/json"
+        with urlopen(
+            Request(
+                url,
+                headers=request_headers,
+                method=method,
+                data=body,
+            ),
+            timeout=timeout,
+            context=context,
+        ) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {detail[:800]}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Network error: {exc.reason}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("API returned invalid JSON") from exc
+
+
+"""
+LLM_API_GENERATION_METHOD_OLD = "def _report(report: Any, event: str, **data: Any) -> None:\n"
+LLM_API_GENERATION_METHOD_NEW = """def generate_test_response(
+    user_data_dir: str | Path,
+    report: Any = None,
+) -> dict[str, Any]:
+    _report(report, "generation_config_loaded")
+    config = load_config(user_data_dir)
+    provider = config["provider"].strip().lower()
+    model = config["model"].strip()
+    key = config["api_key"].strip()
+    _report(
+        report,
+        "generation_config_checked",
+        provider=provider,
+        model=model,
+        configured=bool(key and model),
+    )
+    if not key:
+        raise RuntimeError("LLM API key is not configured")
+    if not model:
+        raise RuntimeError("LLM model is not configured")
+    if provider not in {"gemini", "google", "google-gemini"}:
+        raise RuntimeError(
+            "Generation test currently supports Gemini only"
+        )
+
+    endpoint = (
+        config["endpoint"]
+        or "https://generativelanguage.googleapis.com/v1beta"
+    ).rstrip("/")
+    prompt = "Reply with exactly: YJ64_OK"
+    url = f"{endpoint}/models/{model}:generateContent"
+    _report(
+        report,
+        "generation_request_started",
+        provider=provider,
+        model=model,
+        endpoint=url,
+        prompt=prompt,
+    )
+    data = _request(
+        "POST",
+        url,
+        {"x-goog-api-key": key},
+        payload={
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt},
+                    ],
+                },
+            ],
+        },
+    )
+    _report(report, "generation_response_received", provider=provider)
+
+    candidates = data.get("candidates", [])
+    if not isinstance(candidates, list) or not candidates:
+        raise RuntimeError(
+            f"Gemini returned no candidates: {json.dumps(data, ensure_ascii=False)[:1200]}"
+        )
+    content = candidates[0].get("content", {})
+    parts = content.get("parts", []) if isinstance(content, dict) else []
+    texts = [
+        str(part["text"])
+        for part in parts
+        if isinstance(part, dict) and part.get("text") is not None
+    ]
+    response_text = "".join(texts).strip()
+    if not response_text:
+        raise RuntimeError(
+            f"Gemini returned no text: {json.dumps(data, ensure_ascii=False)[:1200]}"
+        )
+
+    _report(
+        report,
+        "generation_test_completed",
+        provider=provider,
+        model=model,
+        response=response_text,
+    )
+    return {
+        "provider": config["provider"],
+        "model": model,
+        "prompt": prompt,
+        "response": response_text,
+    }
+
+
+def _report(report: Any, event: str, **data: Any) -> None:
+"""
+LLM_MAIN_GENERATION_BUTTON_OLD = """        settings_button.bind(on_release=self._open_llm_settings)
+        root.add_widget(settings_button)
+"""
+LLM_MAIN_GENERATION_BUTTON_NEW = """        settings_button.bind(on_release=self._open_llm_settings)
+        root.add_widget(settings_button)
+
+        generation_button = Button(
+            text="Test LLM Generation + Copy",
+            size_hint_y=None,
+            height=72,
+        )
+        generation_button.bind(on_release=self._test_llm_generation)
+        root.add_widget(generation_button)
+"""
+LLM_MAIN_GENERATION_METHOD_MARKER = "    def _copy_to_clipboard(self, text: str) -> None:\n"
+LLM_MAIN_GENERATION_METHOD_NEW = """    def _test_llm_generation(self, *_: Any) -> None:
+        self._append_report("llm_generation_test_started")
+        self.status.text = "Testing LLM generation..."
+
+        def run_test() -> None:
+            try:
+                from llm_api import generate_test_response
+                result = generate_test_response(
+                    self.user_data_dir,
+                    report=lambda event, **data: self._append_report(
+                        "llm_generation_" + event, **data
+                    ),
+                )
+                report = (
+                    "YJ-64 LLM GENERATION TEST\n"
+                    f"Provider: {result['provider']}\n"
+                    f"Model: {result['model']}\n"
+                    f"Prompt: {result['prompt']}\n"
+                    "Result: SUCCESS\n"
+                    f"Response: {result['response']}"
+                )
+                event = (
+                    "llm_generation_test_succeeded",
+                    {
+                        "provider": result["provider"],
+                        "model": result["model"],
+                        "prompt": result["prompt"],
+                        "response": result["response"],
+                    },
+                )
+            except Exception as exc:
+                report = (
+                    "YJ-64 LLM GENERATION TEST\n"
+                    "Result: FAILED\n"
+                    f"Error: {type(exc).__name__}: {exc}"
+                )
+                event = (
+                    "llm_generation_test_failed",
+                    {
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
+
+            def finish(*_args: Any) -> None:
+                self._append_report(event[0], **event[1])
+                self._copy_to_clipboard(report)
+                self.status.text = report
+
+            Clock.schedule_once(finish, 0)
+
+        from threading import Thread
+        Thread(
+            target=run_test,
+            name="yj64-llm-generation-test",
+            daemon=True,
+        ).start()
+
+"""
