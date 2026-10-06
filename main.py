@@ -50,6 +50,14 @@ class YJ64BaseApp(App):
         monitor_button.bind(on_release=self._open_monitor)
         root.add_widget(monitor_button)
 
+        llm_button = Button(
+            text="Test LLM API + Copy Report",
+            size_hint_y=None,
+            height=72,
+        )
+        llm_button.bind(on_release=self._test_llm_api)
+        root.add_widget(llm_button)
+
         self._write_main_pid()
         self._append_report(
             "base_ui_ready",
@@ -117,6 +125,60 @@ class YJ64BaseApp(App):
             self.status.text = (
                 "Internal Monitor window failed: "
                 f"{type(exc).__name__}: {exc}"
+            )
+
+    def _test_llm_api(self, *_: Any) -> None:
+        self._append_report("llm_api_test_started")
+        self.status.text = "Testing LLM API connection..."
+
+        def run_test(*_args: Any) -> None:
+            try:
+                from llm_api import test_llm_api
+                result = test_llm_api(self.user_data_dir)
+                report = (
+                    "YJ-64 LLM API TEST\n"
+                    f"Provider: {result['provider']}\n"
+                    f"Model: {result['model']}\n"
+                    f"Result: {result['result']}"
+                )
+                self._append_report(
+                    "llm_api_test_succeeded",
+                    provider=result["provider"],
+                    model=result["model"],
+                    result=result["result"],
+                )
+            except Exception as exc:
+                report = (
+                    "YJ-64 LLM API TEST\n"
+                    "Result: FAILED\n"
+                    f"Error: {type(exc).__name__}: {exc}"
+                )
+                self._append_report(
+                    "llm_api_test_failed",
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+            self._copy_to_clipboard(report)
+            self.status.text = report
+
+        Clock.schedule_once(run_test, 0)
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        try:
+            from jnius import autoclass
+            context = autoclass("org.kivy.android.PythonActivity").mActivity
+            clipboard = context.getSystemService(
+                autoclass("android.content.Context").CLIPBOARD_SERVICE
+            )
+            clip = autoclass("android.content.ClipData").newPlainText(
+                "YJ-64 LLM API report", text
+            )
+            clipboard.setPrimaryClip(clip)
+        except Exception as exc:
+            self._append_report(
+                "llm_api_clipboard_failed",
+                error_type=type(exc).__name__,
+                error=str(exc),
             )
 
     def _launched_by_internal_agent(self) -> bool:
