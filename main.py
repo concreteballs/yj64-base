@@ -171,7 +171,6 @@ class YJ64BaseApp(App):
         def run_test() -> None:
             try:
                 from llm_api import test_llm_api
-from llm_settings import LLMSettingsPopup
                 result = test_llm_api(
                     self.user_data_dir,
                     report=lambda event, **data: self._append_report(
