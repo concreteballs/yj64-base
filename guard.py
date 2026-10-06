@@ -125,6 +125,15 @@ LLM_SETTINGS_SAVE_NEW = "    def _save(self, *_: Any) -> None:\n        self._re
 
 LLM_API_REPORT_SIGNATURE_OLD = "def test_llm_api(user_data_dir: str | Path) -> dict[str, Any]:\n"
 LLM_API_REPORT_SIGNATURE_NEW = "def test_llm_api(user_data_dir: str | Path, report: Any = None) -> dict[str, Any]:\n"
+LLM_API_SAVE_CONFIG_OLD = "def _report(report: Any, event: str, **data: Any) -> None:\n"
+LLM_API_SAVE_CONFIG_NEW = """def save_config(user_data_dir: str | Path, config: dict[str, str]) -> None:
+    path = Path(user_data_dir) / CONFIG_RELATIVE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _report(report: Any, event: str, **data: Any) -> None:
+"""
 LLM_API_REPORT_HELPER = """def _report(report: Any, event: str, **data: Any) -> None:
     if report is not None:
         report(event, **data)
