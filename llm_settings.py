@@ -24,11 +24,15 @@ class LLMSettingsPopup(Popup):
         self,
         user_data_dir: str | Path,
         on_test: Callable[[], None] | None = None,
+        on_report: Callable[[str], None] | None = None,
         **kwargs: Any,
     ) -> None:
         self.user_data_dir = Path(user_data_dir)
         self.on_test = on_test
+        self.on_report = on_report
+        self._report("settings_init_started")
         config = load_config(self.user_data_dir)
+        self._report("settings_config_loaded")
 
         content = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(7))
         content.add_widget(Label(
@@ -107,13 +111,19 @@ class LLMSettingsPopup(Popup):
             **kwargs,
         )
 
+    def _report(self, event: str) -> None:
+        if self.on_report is not None:
+            self.on_report(event)
+
     def _provider_changed(self, *_: Any) -> None:
+        self._report("settings_provider_changed")
         if self.provider.text == "openai":
             self.endpoint.text = self.endpoint.text or "https://api.openai.com/v1/responses"
         elif self.provider.text == "gemini":
             self.endpoint.text = self.endpoint.text or "https://generativelanguage.googleapis.com/v1beta"
 
     def _save(self, *_: Any) -> None:
+        self._report("settings_save_started")
         save_config(
             self.user_data_dir,
             {
@@ -126,6 +136,7 @@ class LLMSettingsPopup(Popup):
         self.status.text = "Settings saved."
     
     def _test(self, *_: Any) -> None:
+        self._report("settings_test_started")
         self._save()
         if self.on_test is not None:
             self.on_test()
