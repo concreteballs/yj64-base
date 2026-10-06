@@ -185,8 +185,6 @@ def generate_test_response(
 
 
 def _report(report: Any, event: str, **data: Any) -> None:
-
-def _report(report: Any, event: str, **data: Any) -> None:
     if report is not None:
         report(event, **data)
 
