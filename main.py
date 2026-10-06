@@ -105,7 +105,12 @@ class YJ64BaseApp(App):
             activity = autoclass("org.kivy.android.PythonActivity").mActivity
             monitor_activity = autoclass(MONITOR_ACTIVITY_CLASS)
             intent = autoclass("android.content.Intent")(activity, monitor_activity)
-            intent.addFlags(0x10000000)
+            # Keep the monitor in its own Android task.  The base app task
+            # remains alive in the background and can be returned to from Recents.
+            intent.addFlags(
+                0x10000000  # FLAG_ACTIVITY_NEW_TASK
+                | 0x00020000  # FLAG_ACTIVITY_REORDER_TO_FRONT
+            )
             activity.startActivity(intent)
             self.status.text = "Internal Monitor window requested."
         except Exception as exc:
