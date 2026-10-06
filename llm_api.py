@@ -15,7 +15,45 @@ from urllib.request import Request, urlopen
 CONFIG_RELATIVE_PATH = Path("yj64-llm-config.json")
 
 
-def _request(method: str, url: str, headers: dict[str, str], timeout: float = 30.0) -> dict[str, Any]:
+def _request(
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    timeout: float = 30.0,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        context = ssl.create_default_context()
+        try:
+            import certifi
+            context = ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            pass
+        body = None
+        request_headers = {"Accept": "application/json", **headers}
+        if payload is not None:
+            body = json.dumps(payload).encode("utf-8")
+            request_headers["Content-Type"] = "application/json"
+        with urlopen(
+            Request(
+                url,
+                headers=request_headers,
+                method=method,
+                data=body,
+            ),
+            timeout=timeout,
+            context=context,
+        ) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {detail[:800]}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Network error: {exc.reason}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("API returned invalid JSON") from exc
+
+
     try:
         context = ssl.create_default_context()
         try:
@@ -57,6 +95,96 @@ def save_config(user_data_dir: str | Path, config: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
+
+def generate_test_response(
+    user_data_dir: str | Path,
+    report: Any = None,
+) -> dict[str, Any]:
+    _report(report, "generation_config_loaded")
+    config = load_config(user_data_dir)
+    provider = config["provider"].strip().lower()
+    model = config["model"].strip()
+    key = config["api_key"].strip()
+    _report(
+        report,
+        "generation_config_checked",
+        provider=provider,
+        model=model,
+        configured=bool(key and model),
+    )
+    if not key:
+        raise RuntimeError("LLM API key is not configured")
+    if not model:
+        raise RuntimeError("LLM model is not configured")
+    if provider not in {"gemini", "google", "google-gemini"}:
+        raise RuntimeError(
+            "Generation test currently supports Gemini only"
+        )
+
+    endpoint = (
+        config["endpoint"]
+        or "https://generativelanguage.googleapis.com/v1beta"
+    ).rstrip("/")
+    prompt = "Reply with exactly: YJ64_OK"
+    url = f"{endpoint}/models/{model}:generateContent"
+    _report(
+        report,
+        "generation_request_started",
+        provider=provider,
+        model=model,
+        endpoint=url,
+        prompt=prompt,
+    )
+    data = _request(
+        "POST",
+        url,
+        {"x-goog-api-key": key},
+        payload={
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt},
+                    ],
+                },
+            ],
+        },
+    )
+    _report(report, "generation_response_received", provider=provider)
+
+    candidates = data.get("candidates", [])
+    if not isinstance(candidates, list) or not candidates:
+        raise RuntimeError(
+            f"Gemini returned no candidates: {json.dumps(data, ensure_ascii=False)[:1200]}"
+        )
+    content = candidates[0].get("content", {})
+    parts = content.get("parts", []) if isinstance(content, dict) else []
+    texts = [
+        str(part["text"])
+        for part in parts
+        if isinstance(part, dict) and part.get("text") is not None
+    ]
+    response_text = "".join(texts).strip()
+    if not response_text:
+        raise RuntimeError(
+            f"Gemini returned no text: {json.dumps(data, ensure_ascii=False)[:1200]}"
+        )
+
+    _report(
+        report,
+        "generation_test_completed",
+        provider=provider,
+        model=model,
+        response=response_text,
+    )
+    return {
+        "provider": config["provider"],
+        "model": model,
+        "prompt": prompt,
+        "response": response_text,
+    }
+
+
+def _report(report: Any, event: str, **data: Any) -> None:
 
 def _report(report: Any, event: str, **data: Any) -> None:
     if report is not None:
