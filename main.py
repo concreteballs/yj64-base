@@ -3,23 +3,28 @@
 from __future__ import annotations
 
 import json
+import os
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.button import Button
 from kivy.uix.label import Label
 
-
 SERVICE_CLASS = "org.blackmirror.blackmirror.ServiceInternal"
+MONITOR_ACTIVITY_CLASS = "org.blackmirror.blackmirror.MonitorActivity"
 SERVICE_LAUNCH_FLAG = "yj64.internal_agent_launch"
+REPORT_RELATIVE_PATH = Path("yj64-reports") / "yj64-report.jsonl"
 
 
 class YJ64BaseApp(App):
-    """Minimal target application used to validate the embedded agent."""
-
     def build(self):
+        self.report_path = Path(self.user_data_dir) / REPORT_RELATIVE_PATH
+        self.pid_path = Path(self.user_data_dir) / "yj64-main-process.pid"
         self.status = Label(
             text="Starting embedded diagnostic agent...",
             halign="left",
@@ -30,26 +35,92 @@ class YJ64BaseApp(App):
         )
 
         root = BoxLayout(orientation="vertical", padding=24, spacing=16)
-        root.add_widget(
-            Label(
-                text="YJ-64 Base Application",
-                size_hint_y=None,
-                height=80,
-            )
-        )
+        root.add_widget(Label(
+            text="YJ-64 Base Application",
+            size_hint_y=None,
+            height=80,
+        ))
         root.add_widget(self.status)
+
+        monitor_button = Button(
+            text="Open Internal Monitor",
+            size_hint_y=None,
+            height=72,
+        )
+        monitor_button.bind(on_release=self._open_monitor)
+        root.add_widget(monitor_button)
+
+        self._write_main_pid()
+        self._append_report(
+            "base_ui_ready",
+            pid=os.getpid(),
+            process_name=self._process_name(),
+        )
 
         Clock.schedule_once(self._ensure_service_started, 0.5)
         Clock.schedule_interval(self._refresh_status, 1.0)
         return root
 
+    def _process_name(self) -> str:
+        try:
+            from jnius import autoclass
+            return str(autoclass("android.os.Process").myProcessName())
+        except Exception:
+            return "unknown"
+
+    def _write_main_pid(self) -> None:
+        try:
+            self.pid_path.parent.mkdir(parents=True, exist_ok=True)
+            self.pid_path.write_text(str(os.getpid()), encoding="utf-8")
+        except OSError:
+            pass
+
+    def _append_report(self, event: str, **data: Any) -> None:
+        try:
+            self.report_path.parent.mkdir(parents=True, exist_ok=True)
+            record = {
+                "schema": "yj64.diagnostic.v1",
+                "agent": "yj64-base-application",
+                "event": event,
+                "timestamp_ms": int(time.time() * 1000),
+                "monotonic_ns": time.monotonic_ns(),
+                "message_id": f"APP-{uuid.uuid4().hex}",
+                "data": data,
+            }
+            with self.report_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError:
+            pass
+
+    def _open_monitor(self, *_: Any) -> None:
+        self._append_report(
+            "internal_monitor_window_requested",
+            main_pid=os.getpid(),
+            main_process_name=self._process_name(),
+        )
+        try:
+            from jnius import autoclass
+            activity = autoclass("org.kivy.android.PythonActivity").mActivity
+            monitor_activity = autoclass(MONITOR_ACTIVITY_CLASS)
+            intent = autoclass("android.content.Intent")(activity, monitor_activity)
+            intent.addFlags(0x10000000)
+            activity.startActivity(intent)
+            self.status.text = "Internal Monitor window requested."
+        except Exception as exc:
+            self.status.text = (
+                "Internal Monitor window failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
     def _launched_by_internal_agent(self) -> bool:
         try:
             from jnius import autoclass
-
             activity = autoclass("org.kivy.android.PythonActivity").mActivity
-            intent = activity.getIntent()
-            return bool(intent.getBooleanExtra(SERVICE_LAUNCH_FLAG, False))
+            return bool(activity.getIntent().getBooleanExtra(
+                SERVICE_LAUNCH_FLAG, False
+            ))
         except Exception:
             return False
 
@@ -59,10 +130,8 @@ class YJ64BaseApp(App):
                 "Base application started by the internal diagnostic agent."
             )
             return
-
         try:
             from jnius import autoclass
-
             service_class = autoclass(SERVICE_CLASS)
             activity = autoclass("org.kivy.android.PythonActivity").mActivity
             service_class.start(activity, "")
@@ -77,15 +146,13 @@ class YJ64BaseApp(App):
             )
 
     def _refresh_status(self, *_: Any) -> None:
-        report_path = Path(self.user_data_dir) / "diagnostic-agent-status.json"
-        if not report_path.exists():
+        path = Path(self.user_data_dir) / "diagnostic-agent-status.json"
+        if not path.exists():
             return
-
         try:
-            data = json.loads(report_path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return
-
         self.status.text = (
             "Embedded diagnostic agent\n"
             f"Bridge: {data.get('bridge_status', 'unknown')}\n"
@@ -93,6 +160,23 @@ class YJ64BaseApp(App):
             f"Base app: {data.get('target_launch', 'unknown')}\n"
             f"Last event: {data.get('event', 'unknown')}"
         )
+
+    def on_start(self) -> None:
+        self._append_report(
+            "base_activity_started",
+            pid=os.getpid(),
+            process_name=self._process_name(),
+        )
+
+    def on_resume(self) -> None:
+        self._append_report("base_activity_resumed")
+
+    def on_pause(self) -> bool:
+        self._append_report("base_activity_paused")
+        return True
+
+    def on_stop(self) -> None:
+        self._append_report("base_activity_stopped")
 
 
 YJ64BaseApp().run()
