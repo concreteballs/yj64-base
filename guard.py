@@ -281,8 +281,6 @@ LLM_API_GENERATION_METHOD_NEW = """def generate_test_response(
         "response": response_text,
     }
 
-
-def _report(report: Any, event: str, **data: Any) -> None:
 """
 LLM_MAIN_GENERATION_BUTTON_OLD = """        settings_button.bind(on_release=self._open_llm_settings)
         root.add_widget(settings_button)
