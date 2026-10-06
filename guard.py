@@ -80,7 +80,36 @@ LLM_SETTINGS_METHOD = "    def _open_llm_settings(self, *_: Any) -> None:\n     
 LLM_MAIN_SETTINGS_IMPORT_OLD = "from llm_api import test_llm_api\\n"
 LLM_MAIN_SETTINGS_IMPORT_NEW = "from llm_api import test_llm_api\\nfrom llm_settings import LLMSettingsPopup\\n"
 LLM_OPEN_SETTINGS_OLD = "    def _open_llm_settings(self, *_: Any) -> None:\\n        popup = LLMSettingsPopup(self.user_data_dir, on_test=self._test_llm_api)\\n        popup.open()\\n\\n"
-LLM_OPEN_SETTINGS_NEW = """    def _open_llm_settings(self, *_: Any) -> None:\n        self._append_report("llm_settings_open_requested")\n        try:\n            self._append_report("llm_settings_import_started")\n            from llm_settings import LLMSettingsPopup\n            self._append_report("llm_settings_import_succeeded")\n            popup = LLMSettingsPopup(\n                self.user_data_dir,\n                on_test=self._test_llm_api,\n            )\n            self._append_report("llm_settings_popup_created")\n            popup.open()\n            self._append_report("llm_settings_popup_opened")\n        except Exception as exc:\n            import traceback\n            self._append_report(\n                "llm_settings_open_failed",\n                error_type=type(exc).__name__,\n                error=str(exc),\n                traceback=traceback.format_exc(),\n            )\n            self.status.text = (\n                "LLM settings failed: "\n                f"{type(exc).__name__}: {exc}"\n            )\n\n"""
+LLM_OPEN_SETTINGS_NEW = """    def _open_llm_settings(self, *_: Any) -> None:
+        self._append_report("llm_settings_open_requested")
+        try:
+            self._append_report("llm_settings_import_started")
+            from llm_settings import LLMSettingsPopup
+            self._append_report("llm_settings_import_succeeded")
+            popup = LLMSettingsPopup(
+                self.user_data_dir,
+                on_test=self._test_llm_api,
+                on_report=lambda event: self._append_report(
+                    "llm_settings_" + event
+                ),
+            )
+            self._append_report("llm_settings_popup_created")
+            popup.open()
+            self._append_report("llm_settings_popup_opened")
+        except Exception as exc:
+            import traceback
+            self._append_report(
+                "llm_settings_open_failed",
+                error_type=type(exc).__name__,
+                error=str(exc),
+                traceback=traceback.format_exc(),
+            )
+            self.status.text = (
+                "LLM settings failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+"""
 
 LLM_SETTINGS_REPORT_OLD = "        on_test: Callable[[], None] | None = None,\n        **kwargs: Any,\n"
 LLM_SETTINGS_REPORT_NEW = "        on_test: Callable[[], None] | None = None,\n        on_report: Callable[[str], None] | None = None,\n        **kwargs: Any,\n"
