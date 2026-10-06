@@ -7,7 +7,7 @@ ACTIVITY = 'org.blackmirror.blackmirror.MonitorActivity'
 PROCESS = ':service_internal'
 
 
-def before_apk_build(toolchain: ToolchainCL) -> None:
+def after_apk_build(toolchain: ToolchainCL) -> None:
     manifest_file = (
         Path(toolchain._dist.dist_dir)
         / 'src'
