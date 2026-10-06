@@ -122,3 +122,18 @@ LLM_SETTINGS_REPORT_METHOD = """    def _report(self, event: str) -> None:
 """
 LLM_SETTINGS_SAVE_OLD = "    def _save(self, *_: Any) -> None:\n        save_config(\n"
 LLM_SETTINGS_SAVE_NEW = "    def _save(self, *_: Any) -> None:\n        self._report(\"settings_save_started\")\n        try:\n            save_config(\n"
+
+LLM_API_REPORT_SIGNATURE_OLD = "def test_llm_api(user_data_dir: str | Path) -> dict[str, Any]:\n"
+LLM_API_REPORT_SIGNATURE_NEW = "def test_llm_api(user_data_dir: str | Path, report: Any = None) -> dict[str, Any]:\n"
+LLM_API_REPORT_HELPER = """def _report(report: Any, event: str, **data: Any) -> None:
+    if report is not None:
+        report(event, **data)
+
+"""
+LLM_API_REPORT_STAGES = (
+    ("    config = load_config(user_data_dir)\n", "    _report(report, \"api_config_loaded\")\n    config = load_config(user_data_dir)\n"),
+    ("    if not key:\n", "    _report(report, \"api_key_check\", configured=bool(key))\n    if not key:\n"),
+    ("        data = _request(\"GET\", base + \"/models\", {\"Authorization\": f\"Bearer {key}\"})\n", "        _report(report, \"api_request_started\", provider=provider, endpoint=base + \"/models\")\n        data = _request(\"GET\", base + \"/models\", {\"Authorization\": f\"Bearer {key}\"})\n        _report(report, \"api_request_succeeded\", provider=provider)\n"),
+    ("        data = _request(\"GET\", endpoint + \"/models\", {\"x-goog-api-key\": key})\n", "        _report(report, \"api_request_started\", provider=provider, endpoint=endpoint + \"/models\")\n        data = _request(\"GET\", endpoint + \"/models\", {\"x-goog-api-key\": key})\n        _report(report, \"api_request_succeeded\", provider=provider)\n"),
+    ("    return {\"provider\": config[\"provider\"], \"model\": model, \"result\": result}\n", "    _report(report, \"api_test_completed\", provider=config[\"provider\"], model=model, result=result)\n    return {\"provider\": config[\"provider\"], \"model\": model, \"result\": result}\n"),
+)
