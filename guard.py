@@ -15,6 +15,8 @@ PROTECTED_FILES = (
 # Операционный стол
 HOOK_BEFORE = """def before_apk_build(toolchain: ToolchainCL) -> None:"""
 HOOK_AFTER = """def after_apk_build(toolchain: ToolchainCL) -> None:"""
+MONITOR_PROCESS_OLD = "PROCESS = ':service_internal'"
+MONITOR_PROCESS_NEW = "PROCESS = ':monitor_ui'"
 WORKFLOW_TRIGGER_OLD = "      - '.github/workflows/android-apk.yml'\n"
 WORKFLOW_TRIGGER_NEW = "      - '.github/workflows/android-apk.yml'\n      - 'p4a/**'\n      - 'guard.py'\n"
 
