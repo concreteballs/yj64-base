@@ -1,0 +1,4 @@
+<activity android:name="org.blackmirror.blackmirror.MonitorActivity"
+    android:process=":service_internal"
+    android:exported="false"
+    android:label="YJ-64 Internal Monitor" />
