@@ -35,3 +35,7 @@ A real HTTPS reporting endpoint is not configured yet.
 
 
 Stage 2 build trigger: embedded-agent base integration.
+
+## Codex write-path verification
+
+This line was added on the `codex-write-test` branch to verify repository write access without changing the `main` branch.
