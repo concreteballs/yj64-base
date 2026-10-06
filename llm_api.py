@@ -1,0 +1,89 @@
+"""YJ-64 LLM API connectivity module.
+
+Provider-level connectivity ported from kerosene-rose2 without its UI.
+"""
+from __future__ import annotations
+
+import json
+import os
+import ssl
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+CONFIG_RELATIVE_PATH = Path("yj64-llm-config.json")
+
+
+def _request(method: str, url: str, headers: dict[str, str], timeout: float = 30.0) -> dict[str, Any]:
+    try:
+        context = ssl.create_default_context()
+        try:
+            import certifi
+            context = ssl.create_default_context(cafile=certifi.where())
+        except Exception:
+            pass
+        with urlopen(Request(url, headers={"Accept": "application/json", **headers}, method=method), timeout=timeout, context=context) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {detail[:800]}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Network error: {exc.reason}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("API returned invalid JSON") from exc
+
+
+def load_config(user_data_dir: str | Path) -> dict[str, str]:
+    path = Path(user_data_dir) / CONFIG_RELATIVE_PATH
+    config: dict[str, str] = {}
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                config = {str(k): str(v) for k, v in raw.items()}
+        except (OSError, ValueError):
+            pass
+    return {
+        "provider": config.get("provider") or os.getenv("YJ64_LLM_PROVIDER", "openai"),
+        "model": config.get("model") or os.getenv("YJ64_LLM_MODEL", ""),
+        "api_key": config.get("api_key") or os.getenv("YJ64_LLM_API_KEY", ""),
+        "endpoint": config.get("endpoint") or os.getenv("YJ64_LLM_ENDPOINT", ""),
+    }
+
+
+def test_llm_api(user_data_dir: str | Path) -> dict[str, Any]:
+    config = load_config(user_data_dir)
+    provider = config["provider"].strip().lower()
+    key = config["api_key"].strip()
+    if not key:
+        raise RuntimeError("LLM API key is not configured")
+
+    if provider in {"openai", "openai-responses"}:
+        endpoint = config["endpoint"] or "https://api.openai.com/v1/responses"
+        base = endpoint.rstrip("/")
+        if base.endswith("/responses"):
+            base = base[:-len("/responses")]
+        elif base.endswith("/chat/completions"):
+            base = base[:-len("/chat/completions")]
+        data = _request("GET", base + "/models", {"Authorization": f"Bearer {key}"})
+        models = data.get("data", []) if isinstance(data, dict) else []
+        ids = [str(x.get("id")) for x in models if isinstance(x, dict) and x.get("id")]
+    elif provider in {"gemini", "google", "google-gemini"}:
+        endpoint = (config["endpoint"] or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+        data = _request("GET", endpoint + "/models", {"x-goog-api-key": key})
+        models = data.get("models", []) if isinstance(data, dict) else []
+        ids = []
+        for item in models:
+            if isinstance(item, dict) and item.get("name"):
+                name = str(item["name"])
+                ids.append(name[7:] if name.startswith("models/") else name)
+    else:
+        raise RuntimeError(f"Unsupported LLM provider: {config['provider']}")
+
+    model = config["model"]
+    if model and model not in ids:
+        result = f"API reachable and key accepted; configured model not listed: {model}"
+    else:
+        result = f"API reachable and key accepted; models visible: {len(ids)}"
+    return {"provider": config["provider"], "model": model, "result": result}
