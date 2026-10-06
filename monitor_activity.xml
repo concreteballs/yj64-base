@@ -1,4 +1,6 @@
 <activity android:name="org.blackmirror.blackmirror.MonitorActivity"
-    android:process=":service_internal"
+    android:process=":monitor_ui"
     android:exported="false"
-    android:label="YJ-64 Internal Monitor" />
+    android:label="YJ-64 Internal Monitor"
+    android:taskAffinity="org.blackmirror.blackmirror.monitor"
+    android:launchMode="singleTask" />
