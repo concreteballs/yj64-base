@@ -137,3 +137,5 @@ LLM_API_REPORT_STAGES = (
     ("        data = _request(\"GET\", endpoint + \"/models\", {\"x-goog-api-key\": key})\n", "        _report(report, \"api_request_started\", provider=provider, endpoint=endpoint + \"/models\")\n        data = _request(\"GET\", endpoint + \"/models\", {\"x-goog-api-key\": key})\n        _report(report, \"api_request_succeeded\", provider=provider)\n"),
     ("    return {\"provider\": config[\"provider\"], \"model\": model, \"result\": result}\n", "    _report(report, \"api_test_completed\", provider=config[\"provider\"], model=model, result=result)\n    return {\"provider\": config[\"provider\"], \"model\": model, \"result\": result}\n"),
 )
+LLM_MAIN_API_CALL_OLD = "                result = test_llm_api(self.user_data_dir)\n"
+LLM_MAIN_API_CALL_NEW = "                result = test_llm_api(\n                    self.user_data_dir,\n                    report=lambda event, **data: self._append_report(\n                        \"llm_api_\" + event, **data\n                    ),\n                )\n"
