@@ -136,8 +136,30 @@ class YJ64BaseApp(App):
             )
 
     def _open_llm_settings(self, *_: Any) -> None:
-        popup = LLMSettingsPopup(self.user_data_dir, on_test=self._test_llm_api)
-        popup.open()
+        self._append_report("llm_settings_open_requested")
+        try:
+            self._append_report("llm_settings_import_started")
+            from llm_settings import LLMSettingsPopup
+            self._append_report("llm_settings_import_succeeded")
+            popup = LLMSettingsPopup(
+                self.user_data_dir,
+                on_test=self._test_llm_api,
+            )
+            self._append_report("llm_settings_popup_created")
+            popup.open()
+            self._append_report("llm_settings_popup_opened")
+        except Exception as exc:
+            import traceback
+            self._append_report(
+                "llm_settings_open_failed",
+                error_type=type(exc).__name__,
+                error=str(exc),
+                traceback=traceback.format_exc(),
+            )
+            self.status.text = (
+                "LLM settings failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
     def _test_llm_api(self, *_: Any) -> None:
         self._append_report("llm_api_test_started")
@@ -146,6 +168,7 @@ class YJ64BaseApp(App):
         def run_test() -> None:
             try:
                 from llm_api import test_llm_api
+from llm_settings import LLMSettingsPopup
                 result = test_llm_api(self.user_data_dir)
                 report = (
                     "YJ-64 LLM API TEST\n"
