@@ -144,6 +144,9 @@ class YJ64BaseApp(App):
             popup = LLMSettingsPopup(
                 self.user_data_dir,
                 on_test=self._test_llm_api,
+                on_report=lambda event: self._append_report(
+                    "llm_settings_" + event
+                ),
             )
             self._append_report("llm_settings_popup_created")
             popup.open()
