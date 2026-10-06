@@ -4,7 +4,7 @@ from pythonforandroid.toolchain import ToolchainCL
 
 
 ACTIVITY = 'org.blackmirror.blackmirror.MonitorActivity'
-PROCESS = ':service_internal'
+PROCESS = ':monitor_ui'
 
 
 def after_apk_build(toolchain: ToolchainCL) -> None:
