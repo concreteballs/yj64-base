@@ -10,7 +10,7 @@
     "retry_delay_seconds": 0.5
   },
   "report": {
-    "spool_filename": "diagnostic-reports.jsonl",
+    "spool_filename": "yj64-reports/yj64-report.jsonl",
     "https_endpoint": ""
   }
 }
