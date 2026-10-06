@@ -297,6 +297,8 @@ LLM_MAIN_GENERATION_BUTTON_NEW = """        settings_button.bind(on_release=self
         root.add_widget(generation_button)
 """
 LLM_MAIN_GENERATION_METHOD_MARKER = "    def _copy_to_clipboard(self, text: str) -> None:\n"
+LLM_API_DUPLICATE_REPORT_OLD = "def _report(report: Any, event: str, **data: Any) -> None:\n\ndef _report(report: Any, event: str, **data: Any) -> None:\n"
+LLM_API_DUPLICATE_REPORT_NEW = "def _report(report: Any, event: str, **data: Any) -> None:\n"
 LLM_MAIN_GENERATION_METHOD_NEW = """    def _test_llm_generation(self, *_: Any) -> None:
         self._append_report("llm_generation_test_started")
         self.status.text = "Testing LLM generation..."
