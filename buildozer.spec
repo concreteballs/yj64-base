@@ -19,7 +19,7 @@ services = internal:services/internal_monitor.py:foreground:sticky:foregroundSer
 android.debug_artifact = apk
 android.add_src = android_src
 android.add_activities = org.blackmirror.blackmirror.MonitorActivity
-android.extra_manifest_application_arguments = ./monitor_activity.xml
+p4a.hook = ./p4a/hook.py
 android.p4a_extra_args = --cflags="-Wno-error=implicit-function-declaration" --extra-manifest-xml="<queries><package android:name=\"org.blackmirror.blackmirror\" /></queries>"
 
 [buildozer]
