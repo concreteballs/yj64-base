@@ -58,6 +58,14 @@ class YJ64BaseApp(App):
         llm_button.bind(on_release=self._test_llm_api)
         root.add_widget(llm_button)
 
+        settings_button = Button(
+            text="Configure LLM API / Key",
+            size_hint_y=None,
+            height=72,
+        )
+        settings_button.bind(on_release=self._open_llm_settings)
+        root.add_widget(settings_button)
+
         self._write_main_pid()
         self._append_report(
             "base_ui_ready",
@@ -127,6 +135,10 @@ class YJ64BaseApp(App):
                 f"{type(exc).__name__}: {exc}"
             )
 
+    def _open_llm_settings(self, *_: Any) -> None:
+        popup = LLMSettingsPopup(self.user_data_dir, on_test=self._test_llm_api)
+        popup.open()
+
     def _test_llm_api(self, *_: Any) -> None:
         self._append_report("llm_api_test_started")
         self.status.text = "Testing LLM API connection..."
@@ -134,6 +146,7 @@ class YJ64BaseApp(App):
         def run_test() -> None:
             try:
                 from llm_api import test_llm_api
+from llm_settings import LLMSettingsPopup
                 result = test_llm_api(self.user_data_dir)
                 report = (
                     "YJ-64 LLM API TEST\n"
