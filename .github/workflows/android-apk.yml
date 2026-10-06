@@ -7,6 +7,8 @@ on:
       - 'buildozer.spec'
       - 'main.py'
       - 'services/**'
+      - 'llm_api.py'
+      - 'llm_settings.py'
       - 'config/**'
       - 'README.md'
       - '.github/workflows/android-apk.yml'
@@ -52,7 +54,7 @@ jobs:
 
       - name: Validate sources
         run: |
-          python -m py_compile main.py services/internal_monitor.py
+          python -m py_compile main.py services/internal_monitor.py llm_api.py llm_settings.py
 
       - name: Clean previous Android build artifacts and logs
         run: |
