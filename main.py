@@ -66,6 +66,14 @@ class YJ64BaseApp(App):
         settings_button.bind(on_release=self._open_llm_settings)
         root.add_widget(settings_button)
 
+        generation_button = Button(
+            text="Test LLM Generation + Copy",
+            size_hint_y=None,
+            height=72,
+        )
+        generation_button.bind(on_release=self._test_llm_generation)
+        root.add_widget(generation_button)
+
         self._write_main_pid()
         self._append_report(
             "base_ui_ready",
@@ -214,6 +222,64 @@ class YJ64BaseApp(App):
 
         from threading import Thread
         Thread(target=run_test, name="yj64-llm-api-test", daemon=True).start()
+
+    def _test_llm_generation(self, *_: Any) -> None:
+        self._append_report("llm_generation_test_started")
+        self.status.text = "Testing LLM generation..."
+
+        def run_test() -> None:
+            try:
+                from llm_api import generate_test_response
+                result = generate_test_response(
+                    self.user_data_dir,
+                    report=lambda event, **data: self._append_report(
+                        "llm_generation_" + event, **data
+                    ),
+                )
+                report = (
+                    "YJ-64 LLM GENERATION TEST\n"
+                    f"Provider: {result['provider']}\n"
+                    f"Model: {result['model']}\n"
+                    f"Prompt: {result['prompt']}\n"
+                    "Result: SUCCESS\n"
+                    f"Response: {result['response']}"
+                )
+                event = (
+                    "llm_generation_test_succeeded",
+                    {
+                        "provider": result["provider"],
+                        "model": result["model"],
+                        "prompt": result["prompt"],
+                        "response": result["response"],
+                    },
+                )
+            except Exception as exc:
+                report = (
+                    "YJ-64 LLM GENERATION TEST\n"
+                    "Result: FAILED\n"
+                    f"Error: {type(exc).__name__}: {exc}"
+                )
+                event = (
+                    "llm_generation_test_failed",
+                    {
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
+
+            def finish(*_args: Any) -> None:
+                self._append_report(event[0], **event[1])
+                self._copy_to_clipboard(report)
+                self.status.text = report
+
+            Clock.schedule_once(finish, 0)
+
+        from threading import Thread
+        Thread(
+            target=run_test,
+            name="yj64-llm-generation-test",
+            daemon=True,
+        ).start()
 
     def _copy_to_clipboard(self, text: str) -> None:
         try:
