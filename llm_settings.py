@@ -18,6 +18,11 @@ from kivy.uix.textinput import TextInput
 
 from llm_api import load_config, save_config, test_llm_api
 
+FREE_GEMINI_MODELS = (
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+)
+
 
 class LLMSettingsPopup(Popup):
     def __init__(
@@ -51,6 +56,20 @@ class LLMSettingsPopup(Popup):
         )
         self.provider.bind(text=self._provider_changed)
         content.add_widget(self.provider)
+
+        content.add_widget(Label(text="Free-tier model presets", size_hint_y=None, height=dp(24)))
+        self.model_preset = Spinner(
+            text=(
+                config.get("model", "")
+                if config.get("model", "") in FREE_GEMINI_MODELS
+                else "CUSTOM / KEEP CURRENT"
+            ),
+            values=("CUSTOM / KEEP CURRENT",) + FREE_GEMINI_MODELS,
+            size_hint_y=None,
+            height=dp(42),
+        )
+        self.model_preset.bind(text=self._model_preset_changed)
+        content.add_widget(self.model_preset)
 
         content.add_widget(Label(text="Model", size_hint_y=None, height=dp(24)))
         self.model = TextInput(
@@ -114,6 +133,11 @@ class LLMSettingsPopup(Popup):
     def _report(self, event: str) -> None:
         if self.on_report is not None:
             self.on_report(event)
+
+    def _model_preset_changed(self, _instance: Any, value: str) -> None:
+        self._report("settings_model_preset_changed")
+        if value != "CUSTOM / KEEP CURRENT":
+            self.model.text = value
 
     def _provider_changed(self, *_: Any) -> None:
         self._report("settings_provider_changed")
