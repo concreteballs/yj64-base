@@ -314,18 +314,6 @@ def participant_config_exists(
         user_data_dir,
         participant_name=participant_name,
     ).is_file()
-
-
-    user_data_dir: str | Path,
-    config: dict[str, str],
-    participant_name: str = "Owner",
-) -> None:
-    path = _participant_config_path(user_data_dir, participant_name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(config, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
 END ALLOWED
 FILE: llm_api.py BEGIN ALLOWED
 def generate_response(
