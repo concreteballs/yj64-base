@@ -699,3 +699,14 @@ LLM_MODEL_PRESET_UI_OLD = "        content.add_widget(Label(text=\"Model\", size
 LLM_MODEL_PRESET_UI_NEW = "        content.add_widget(Label(text=\"Free-tier model presets\", size_hint_y=None, height=dp(24)))\n        self.model_preset = Spinner(\n            text=(\n                config.get(\"model\", \"\")\n                if config.get(\"model\", \"\") in FREE_GEMINI_MODELS\n                else \"CUSTOM / KEEP CURRENT\"\n            ),\n            values=(\"CUSTOM / KEEP CURRENT\",) + FREE_GEMINI_MODELS,\n            size_hint_y=None,\n            height=dp(42),\n        )\n        self.model_preset.bind(text=self._model_preset_changed)\n        content.add_widget(self.model_preset)\n\n        content.add_widget(Label(text=\"Model\", size_hint_y=None, height=dp(24)))\n        self.model = TextInput(\n"
 LLM_MODEL_PRESET_METHOD_MARKER = "    def _provider_changed(self, *_: Any) -> None:\n"
 LLM_MODEL_PRESET_METHOD_BLOCK = "    def _model_preset_changed(self, _instance: Any, value: str) -> None:\n        self._report(\"settings_model_preset_changed\")\n        if value != \"CUSTOM / KEEP CURRENT\":\n            self.model.text = value\n\n"
+
+# Free-tier model preset import insertion point
+LLM_FREE_MODEL_IMPORT_OLD = """from llm_api import load_config, save_config, test_llm_api
+"""
+LLM_FREE_MODEL_IMPORT_NEW = """from llm_api import load_config, save_config, test_llm_api
+
+FREE_GEMINI_MODELS = (
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+)
+"""
