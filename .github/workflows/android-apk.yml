@@ -2,7 +2,7 @@ name: YJ-64 Base Android APK
 
 on:
   push:
-    branches: [main, 'work/**']
+    branches: [main, 'work/**', 'monitor-api']
     paths:
       - 'buildozer.spec'
       - 'main.py'
