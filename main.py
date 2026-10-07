@@ -280,16 +280,11 @@ class YJ64BaseApp(App):
                 )
                 chat_text = result["response"]
                 report = (
-                    "YJ-64 LLM GENERATION TEST
-"
-                    f"Provider: {result['provider']}
-"
-                    f"Model: {result['model']}
-"
-                    f"Prompt: {result['prompt']}
-"
-                    "Result: SUCCESS
-"
+                    "YJ-64 LLM GENERATION TEST\n"
+                    f"Provider: {result['provider']}\n"
+                    f"Model: {result['model']}\n"
+                    f"Prompt: {result['prompt']}\n"
+                    "Result: SUCCESS\n"
                     f"Response: {result['response']}"
                 )
                 event = (
@@ -299,40 +294,7 @@ class YJ64BaseApp(App):
                         "model": result["model"],
                         "prompt": result["prompt"],
                         "response": result["response"],
-                    },
-                )
-            except Exception as exc:
-                report = (
-                    "YJ-64 LLM GENERATION TEST
-"
-                    "Result: FAILED
-"
-                    f"Error: {type(exc).__name__}: {exc}"
-                )
-                chat_text = report
-                event = (
-                    "llm_generation_test_failed",
-                    {
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                    },
-                )
-
-            def finish(*_args: Any) -> None:
-                self._append_report(event[0], **event[1])
-                self._copy_to_clipboard(report)
-                self.chat_output.text = chat_text
-                self.status.text = report
-
-            Clock.schedule_once(finish, 0)
-
-        from threading import Thread
-        Thread(
-            target=run_test,
-            name="yj64-llm-generation-test",
-            daemon=True,
-        ).start()
-
+                    }
     def _chat_input_focus_changed(self, _instance: Any, focused: bool) -> None:
         self._append_report("llm_chat_input_focus_changed", focused=focused)
 
