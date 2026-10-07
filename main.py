@@ -445,7 +445,6 @@ class YJ64BaseApp(App):
 
         def append_chat(text_value: str) -> None:
             output.text = output.text.rstrip() + "\n" + text_value + "\n"
-            output.cursor = (0, 0)
 
         def request_stop(*_args: Any) -> None:
             state["stop_requested"] = True
@@ -457,7 +456,7 @@ class YJ64BaseApp(App):
             messages: list[dict[str, str]] = [
                 {"speaker": "Owner", "text": question}
             ]
-            index = 0
+            seen_by = {name: 0 for name in participants}
             turn = 0
             state["running"] = True
             state["stop_requested"] = False
@@ -477,7 +476,7 @@ class YJ64BaseApp(App):
                         "role": role,
                         "content": f"{item['speaker']}: {item['text']}",
                     })
-                new_count = len(messages) - index
+                new_count = len(messages) - seen_by[participant]
                 self._append_report(
                     "group_dialogue_turn_started",
                     participant=participant,
@@ -503,7 +502,7 @@ class YJ64BaseApp(App):
                     )
                     response = result["response"]
                     messages.append({"speaker": participant, "text": response})
-                    index = len(messages)
+                    seen_by[participant] = len(messages)
                     self._append_report(
                         "group_dialogue_turn_completed",
                         participant=participant,
@@ -531,8 +530,6 @@ class YJ64BaseApp(App):
                     )
                     break
                 turn += 1
-                if len(participants) > 1 and turn > 0:
-                    index = max(0, index - 1)
             state["running"] = False
             Clock.schedule_once(
                 lambda _dt: (
