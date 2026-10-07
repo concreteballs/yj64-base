@@ -775,3 +775,12 @@ LLM_API_TEST_SIGNATURE_OLD = "def test_llm_api(user_data_dir: str | Path, report
 LLM_API_TEST_SIGNATURE_NEW = "def test_llm_api(user_data_dir: str | Path, report: Any = None, participant_name: str = \"Owner\") -> dict[str, Any]:\n"
 LLM_API_TEST_LOAD_OLD = "    config = load_config(user_data_dir)\n"
 LLM_API_TEST_LOAD_NEW = "    config = load_config(user_data_dir, participant_name=participant_name)\n"
+
+
+# Participant human/LLM mode fragments
+LLM_SETTINGS_MODE_UI_OLD = "        content.add_widget(Label(\n            text=f\"{self.participant_name} / LLM MODEL / API CONNECTION\",\n            bold=True,\n            size_hint_y=None,\n            height=dp(36),\n        ))\n\n        content.add_widget(Label(text=\"Provider\", size_hint_y=None, height=dp(24)))\n"
+LLM_SETTINGS_MODE_UI_NEW = "        content.add_widget(Label(\n            text=f\"{self.participant_name} / LLM MODEL / API CONNECTION\",\n            bold=True,\n            size_hint_y=None,\n            height=dp(36),\n        ))\n\n        if self.participant_name != \"Owner\":\n            content.add_widget(Label(\n                text=\"Participant type\",\n                size_hint_y=None,\n                height=dp(24),\n            ))\n            self.mode = Spinner(\n                text=(config.get(\"mode\", \"llm\") or \"llm\").upper(),\n                values=(\"LLM\", \"HUMAN\"),\n                size_hint_y=None,\n                height=dp(42),\n            )\n            content.add_widget(self.mode)\n\n        content.add_widget(Label(text=\"Provider\", size_hint_y=None, height=dp(24)))\n"
+LLM_SETTINGS_MODE_SAVE_OLD = "                \"api_key\": self.api_key.text,\n                \"mode\": \"llm\",\n"
+LLM_SETTINGS_MODE_SAVE_NEW = "                \"api_key\": self.api_key.text,\n                \"mode\": (\n                    self.mode.text.lower()\n                    if hasattr(self, \"mode\")\n                    else \"llm\"\n                ),\n"
+LLM_SETTINGS_MODE_TEST_OLD = "        self._report(\"settings_test_started\")\n        self._save()\n        if self.on_test is not None:\n"
+LLM_SETTINGS_MODE_TEST_NEW = "        self._report(\"settings_test_started\")\n        if getattr(self, \"mode\", None) is not None and self.mode.text == \"HUMAN\":\n            self.status.text = \"Human participant: no LLM API test is required.\"\n            return\n        self._save()\n        if self.on_test is not None:\n"
