@@ -739,3 +739,8 @@ MAIN_DIALOG_FINISH_NEW = """            def finish(*_args: Any) -> None:
 # Automatic APK build for the monitor-api branch
 WORKFLOW_ANDROID_BRANCHES_OLD = "    branches: [main, 'work/**']\n"
 WORKFLOW_ANDROID_BRANCHES_NEW = "    branches: [main, 'work/**', 'monitor-api']\n"
+
+
+# Participant-specific multi-model configuration ported from kerosene-rose2
+PARTICIPANT_MULTI_MODEL_MARKER = "class ParticipantLLMPopup(Popup):\n"
+PARTICIPANT_MULTI_MODEL_NOTE = """Port the kerosene-rose2 participant model-profile design: Participant 1/2/3 can each select a separate model/API profile; Owner remains human and has no model button. Profiles carry provider, model, endpoint and API key and are assigned per participant. Keep the existing Owner/default configuration compatible."""
