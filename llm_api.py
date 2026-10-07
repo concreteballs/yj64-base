@@ -54,23 +54,6 @@ def _request(
         raise RuntimeError("API returned invalid JSON") from exc
 
 
-    try:
-        context = ssl.create_default_context()
-        try:
-            import certifi
-            context = ssl.create_default_context(cafile=certifi.where())
-        except Exception:
-            pass
-        with urlopen(Request(url, headers={"Accept": "application/json", **headers}, method=method), timeout=timeout, context=context) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code}: {detail[:800]}") from exc
-    except URLError as exc:
-        raise RuntimeError(f"Network error: {exc.reason}") from exc
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("API returned invalid JSON") from exc
-
 
 def load_config(user_data_dir: str | Path) -> dict[str, str]:
     path = Path(user_data_dir) / CONFIG_RELATIVE_PATH
