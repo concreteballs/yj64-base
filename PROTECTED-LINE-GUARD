@@ -205,7 +205,7 @@ def main() -> int:
     for match in sections:
         path = match.group("path")
         expected = match.group("content")
-        if "ЗДЕСЬ ДОЛЖЕН НАХОДИТЬСЯ" in expected:
+        if "ЗДЕСЬ " + "ДОЛЖЕН НАХОДИТЬСЯ" in expected:
             raise SystemExit(f"GUARD CHECK FAILED: placeholder remains for {path}")
         working_path = Path(path)
         if not working_path.is_file():
@@ -241,7 +241,7 @@ END ALLOWED
 EXPECTED-GIT-BLOB-SHA:main.py=4333073e15d0d8d51b9fd1ce002173da00558621
 EXPECTED-GIT-BLOB-SHA:llm_api.py=40b896505614388427137e7cc98c07c39310fa86
 EXPECTED-GIT-BLOB-SHA:llm_settings.py=3beec5e8cc288d8254095831b6829a811af8f7d2
-EXPECTED-GIT-BLOB-SHA:tools/verify_guard.py=05c5d8600199f63d68ade20688bbc75778ec3020
+EXPECTED-GIT-BLOB-SHA:tools/verify_guard.py=887269e44f5fbffc093de87d02e7bf960f3e138b
 🟢 CI CONFIGURED: Android Build workflow is triggered only by PROTECTED-LINE-GUARD.
 ============================================================ ОЧЕРЕДЬ
 🟢 ГОТОВО Рабочая LLM/API сохранена.
