@@ -55,8 +55,21 @@ def _request(
 
 
 
-def load_config(user_data_dir: str | Path) -> dict[str, str]:
-    path = Path(user_data_dir) / CONFIG_RELATIVE_PATH
+def _participant_config_path(
+    user_data_dir: str | Path,
+    participant_name: str = "Owner",
+) -> Path:
+    if participant_name.strip().lower() == "owner":
+        return Path(user_data_dir) / CONFIG_RELATIVE_PATH
+    slug = participant_name.strip().lower().replace(" ", "-")
+    return Path(user_data_dir) / f"yj64-llm-config-{slug}.json"
+
+
+def load_config(
+    user_data_dir: str | Path,
+    participant_name: str = "Owner",
+) -> dict[str, str]:
+    path = _participant_config_path(user_data_dir, participant_name)
     config: dict[str, str] = {}
     if path.exists():
         try:
@@ -65,18 +78,31 @@ def load_config(user_data_dir: str | Path) -> dict[str, str]:
                 config = {str(k): str(v) for k, v in raw.items()}
         except (OSError, ValueError):
             pass
+
+    if participant_name.strip().lower() != "owner" and not config:
+        owner = load_config(user_data_dir, participant_name="Owner")
+        config = dict(owner)
+
     return {
         "provider": config.get("provider") or os.getenv("YJ64_LLM_PROVIDER", "openai"),
         "model": config.get("model") or os.getenv("YJ64_LLM_MODEL", ""),
         "api_key": config.get("api_key") or os.getenv("YJ64_LLM_API_KEY", ""),
         "endpoint": config.get("endpoint") or os.getenv("YJ64_LLM_ENDPOINT", ""),
+        "mode": config.get("mode") or "llm",
     }
 
 
-def save_config(user_data_dir: str | Path, config: dict[str, str]) -> None:
-    path = Path(user_data_dir) / CONFIG_RELATIVE_PATH
+def save_config(
+    user_data_dir: str | Path,
+    config: dict[str, str],
+    participant_name: str = "Owner",
+) -> None:
+    path = _participant_config_path(user_data_dir, participant_name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(
+        json.dumps(config, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def generate_test_response(
@@ -171,9 +197,10 @@ def generate_response(
     user_data_dir: str | Path,
     prompt: str,
     report: Any = None,
+    participant_name: str = "Owner",
 ) -> dict[str, Any]:
     _report(report, "generation_config_loaded")
-    config = load_config(user_data_dir)
+    config = load_config(user_data_dir, participant_name=participant_name)
     provider = config["provider"].strip().lower()
     model = config["model"].strip()
     key = config["api_key"].strip()
@@ -255,9 +282,9 @@ def _report(report: Any, event: str, **data: Any) -> None:
         report(event, **data)
 
 
-def test_llm_api(user_data_dir: str | Path, report: Any = None) -> dict[str, Any]:
+def test_llm_api(user_data_dir: str | Path, report: Any = None, participant_name: str = "Owner") -> dict[str, Any]:
     _report(report, "api_config_loaded")
-    config = load_config(user_data_dir)
+    config = load_config(user_data_dir, participant_name=participant_name)
     provider = config["provider"].strip().lower()
     key = config["api_key"].strip()
     _report(report, "api_key_check", configured=bool(key))
