@@ -29,6 +29,8 @@ class YJ64BaseApp(App):
     def build(self):
         self.report_path = Path(self.user_data_dir) / REPORT_RELATIVE_PATH
         self.pid_path = Path(self.user_data_dir) / "yj64-main-process.pid"
+        self.dialog_stop_requested = False
+        self.chat_generation_active = False
         self.status = Label(
             text="Starting embedded diagnostic agent...",
             halign="left",
@@ -92,6 +94,18 @@ class YJ64BaseApp(App):
         )
         root.add_widget(self.chat_output)
 
+        root.add_widget(Label(
+            text="PARTICIPANTS: Owner | Participant 1 | Participant 2 | Participant 3",
+            size_hint_y=None,
+            height=42,
+        ))
+        self.dialog_status = Label(
+            text="Dialog ready. Automated participants may continue until stopped.",
+            size_hint_y=None,
+            height=42,
+        )
+        root.add_widget(self.dialog_status)
+
         chat_row = BoxLayout(
             spacing=12,
             size_hint_y=None,
@@ -114,6 +128,14 @@ class YJ64BaseApp(App):
         chat_send.bind(on_release=self._send_llm_chat)
         chat_row.add_widget(chat_send)
         root.add_widget(chat_row)
+
+        self.stop_dialog_button = Button(
+            text="STOP DIALOG",
+            size_hint_y=None,
+            height=58,
+        )
+        self.stop_dialog_button.bind(on_release=self._stop_dialog)
+        root.add_widget(self.stop_dialog_button)
 
         self._write_main_pid()
         self._append_report(
@@ -325,6 +347,23 @@ class YJ64BaseApp(App):
             name="yj64-llm-generation-test",
             daemon=True,
         ).start()
+
+    def _stop_dialog(self, *_: Any) -> None:
+        self.dialog_stop_requested = True
+        self._append_report(
+            "llm_dialog_stop_requested",
+            generation_active=self.chat_generation_active,
+            policy="finish_current_response_then_block_next_automated_turn",
+        )
+        if self.chat_generation_active:
+            message = "Dialog stopped: the current response will finish; no next automated participant turn will start."
+        else:
+            message = "Dialog stopped: no automated participant can start another turn. You can still send messages as Owner."
+        self.dialog_status.text = message
+        self.status.text = message
+
+    def _automated_turn_allowed(self) -> bool:
+        return not self.dialog_stop_requested
 
     def _chat_input_focus_changed(self, _instance: Any, focused: bool) -> None:
         self._append_report("llm_chat_input_focus_changed", focused=focused)
