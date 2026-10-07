@@ -710,3 +710,27 @@ FREE_GEMINI_MODELS = (
     "gemini-2.5-flash-lite",
 )
 """
+
+# Dialog generation lifecycle
+MAIN_DIALOG_ACTIVE_OLD = """        self.chat_input.text = ""
+
+        def run_chat() -> None:
+"""
+MAIN_DIALOG_ACTIVE_NEW = """        self.chat_input.text = ""
+        self.chat_generation_active = True
+
+        def run_chat() -> None:
+"""
+MAIN_DIALOG_FINISH_OLD = """            def finish(*_args: Any) -> None:
+                self._append_report(event[0], **event[1])
+                self.chat_output.text = report
+                self.status.text = report
+"""
+MAIN_DIALOG_FINISH_NEW = """            def finish(*_args: Any) -> None:
+                self.chat_generation_active = False
+                self._append_report(event[0], **event[1])
+                self.chat_output.text = report
+                self.status.text = report
+                if self.dialog_stop_requested:
+                    self.dialog_status.text = "Dialog stopped. Current response finished; only Owner can send the next message."
+"""
