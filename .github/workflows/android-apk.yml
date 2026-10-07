@@ -2,18 +2,9 @@ name: YJ-64 Base Android APK
 
 on:
   push:
-    branches: [main, 'work/**']
+    branches: ['monitor-api-2']
     paths:
-      - 'buildozer.spec'
-      - 'main.py'
-      - 'services/**'
-      - 'llm_api.py'
-      - 'llm_settings.py'
-      - 'config/**'
-      - 'README.md'
-      - '.github/workflows/android-apk.yml'
-      - 'p4a/**'
-      - 'guard.py'
+      - 'PROTECTED-LINE-GUARD'
   workflow_dispatch:
 
 concurrency:
@@ -30,6 +21,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify PROTECTED-LINE-GUARD
+        run: |
+          python3 tools/verify_guard.py
 
       - name: Set up Python
         uses: actions/setup-python@v5
