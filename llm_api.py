@@ -150,19 +150,18 @@ def generate_test_response(
         endpoint=url,
         prompt=prompt,
     )
+    contents = []
+    for item in history or [{"role": "user", "content": prompt}]:
+        role = "model" if item.get("role") == "assistant" else "user"
+        contents.append({
+            "role": role,
+            "parts": [{"text": str(item.get("content", ""))}],
+        })
     data = _request(
         "POST",
         url,
         {"x-goog-api-key": key},
-        payload={
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt},
-                    ],
-                },
-            ],
-        },
+        payload={"contents": contents},
     )
     _report(report, "generation_response_received", provider=provider)
 
@@ -204,6 +203,7 @@ def generate_response(
     prompt: str,
     report: Any = None,
     participant_name: str = "Owner",
+    history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     _report(report, "generation_config_loaded")
     config = load_config(user_data_dir, participant_name=participant_name)
@@ -230,13 +230,13 @@ def generate_response(
             url = endpoint
             payload = {
                 "model": model,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": history or [{"role": "user", "content": prompt}],
             }
         else:
             url = endpoint if endpoint.endswith("/responses") else endpoint + "/responses"
             payload = {
                 "model": model,
-                "input": [{"role": "user", "content": prompt}],
+                "input": history or [{"role": "user", "content": prompt}],
             }
         _report(
             report,
