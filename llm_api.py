@@ -79,10 +79,6 @@ def load_config(
         except (OSError, ValueError):
             pass
 
-    if participant_name.strip().lower() != "owner" and not config:
-        owner = load_config(user_data_dir, participant_name="Owner")
-        config = dict(owner)
-
     return {
         "provider": config.get("provider") or os.getenv("YJ64_LLM_PROVIDER", "openai"),
         "model": config.get("model") or os.getenv("YJ64_LLM_MODEL", ""),
@@ -90,6 +86,16 @@ def load_config(
         "endpoint": config.get("endpoint") or os.getenv("YJ64_LLM_ENDPOINT", ""),
         "mode": config.get("mode") or "llm",
     }
+
+
+def participant_config_exists(
+    user_data_dir: str | Path,
+    participant_name: str,
+) -> bool:
+    return _participant_config_path(
+        user_data_dir,
+        participant_name=participant_name,
+    ).is_file()
 
 
 def save_config(
