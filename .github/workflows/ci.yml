@@ -1,0 +1,36 @@
+name: YJ-64 Guard Validation
+
+on:
+  push:
+    branches: ['monitor-api-2']
+    paths:
+      - 'PROTECTED-LINE-GUARD'
+      - 'main.py'
+      - 'llm_api.py'
+      - 'llm_settings.py'
+      - 'tools/verify_guard.py'
+  pull_request:
+    branches: ['monitor-api-2']
+    paths:
+      - 'PROTECTED-LINE-GUARD'
+      - 'main.py'
+      - 'llm_api.py'
+      - 'llm_settings.py'
+      - 'tools/verify_guard.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Verify Guard before any Android build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify protected fragments and file identities
+        run: |
+          python3 tools/verify_guard.py
+      - name: Compile protected Python modules
+        run: |
+          python3 -m py_compile main.py llm_api.py llm_settings.py tools/verify_guard.py
