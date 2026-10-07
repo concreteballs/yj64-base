@@ -120,7 +120,7 @@ class YJ64BaseApp(App):
             orientation="vertical",
             spacing=8,
             size_hint_y=None,
-            height=220,
+            height=280,
         )
         participant_column.add_widget(Label(
             text="PARTICIPANTS",
@@ -140,6 +140,13 @@ class YJ64BaseApp(App):
             )
             self.participant_buttons[participant_name] = button
             participant_column.add_widget(button)
+        dialogue_button = Button(
+            text="START GROUP DIALOGUE",
+            size_hint_y=None,
+            height=58,
+        )
+        dialogue_button.bind(on_release=self._open_group_dialogue)
+        participant_column.add_widget(dialogue_button)
         root.add_widget(participant_column)
         self._refresh_participant_buttons()
 
@@ -284,7 +291,8 @@ class YJ64BaseApp(App):
             hint_text=f"Message to {participant_name}...",
             multiline=True,
             size_hint_y=None,
-            height=90,
+            height=110,
+            write_tab=False,
         )
         send = Button(text="SEND", size_hint_y=None, height=54)
         close = Button(text="CLOSE", size_hint_y=None, height=54)
@@ -373,6 +381,191 @@ class YJ64BaseApp(App):
             ).start()
 
         send.bind(on_release=send_message)
+        close.bind(on_release=lambda *_: popup.dismiss())
+        popup.open()
+
+    def _open_group_dialogue(self, *_: Any) -> None:
+        participants = [
+            name
+            for name in ("Participant 1", "Participant 2", "Participant 3")
+            if self._participant_config_status(name)["configured"]
+        ]
+        if len(participants) < 2:
+            self._append_report(
+                "group_dialogue_start_rejected",
+                reason="at_least_two_participants_required",
+                participants=participants,
+            )
+            self.status.text = "Configure at least two participants first."
+            return
+
+        self._append_report(
+            "group_dialogue_opened",
+            participants=participants,
+        )
+        content = BoxLayout(orientation="vertical", spacing=8, padding=12)
+        output = TextInput(
+            text="Group dialogue is ready.\n",
+            readonly=True,
+            multiline=True,
+        )
+        prompt = TextInput(
+            hint_text="Your question to the participants...",
+            multiline=True,
+            size_hint_y=None,
+            height=110,
+            write_tab=False,
+        )
+        controls = BoxLayout(
+            spacing=8,
+            size_hint_y=None,
+            height=54,
+        )
+        send = Button(text="START", size_hint_x=0.5)
+        stop = Button(text="STOP DIALOGUE", size_hint_x=0.5, disabled=True)
+        controls.add_widget(send)
+        controls.add_widget(stop)
+        close = Button(text="CLOSE", size_hint_y=None, height=54)
+        content.add_widget(output)
+        content.add_widget(prompt)
+        content.add_widget(controls)
+        content.add_widget(close)
+
+        popup = Popup(
+            title="GROUP DIALOGUE",
+            content=content,
+            size_hint=(0.95, 0.86),
+            auto_dismiss=False,
+        )
+
+        state = {
+            "running": False,
+            "stop_requested": False,
+        }
+
+        def append_chat(text_value: str) -> None:
+            output.text = output.text.rstrip() + "\n" + text_value + "\n"
+            output.cursor = (0, 0)
+
+        def request_stop(*_args: Any) -> None:
+            state["stop_requested"] = True
+            stop.disabled = True
+            self._append_report("group_dialogue_stop_requested")
+            append_chat("[STOP REQUESTED] Waiting for the current request to finish.")
+
+        def run_dialogue(question: str) -> None:
+            messages: list[dict[str, str]] = [
+                {"speaker": "Owner", "text": question}
+            ]
+            index = 0
+            turn = 0
+            state["running"] = True
+            state["stop_requested"] = False
+            self._append_report(
+                "group_dialogue_started",
+                participants=participants,
+                question=question,
+            )
+
+            while not state["stop_requested"]:
+                participant = participants[turn % len(participants)]
+                status = self._participant_config_status(participant)
+                history: list[dict[str, str]] = []
+                for item in messages:
+                    role = "assistant" if item["speaker"] == participant else "user"
+                    history.append({
+                        "role": role,
+                        "content": f"{item['speaker']}: {item['text']}",
+                    })
+                new_count = len(messages) - index
+                self._append_report(
+                    "group_dialogue_turn_started",
+                    participant=participant,
+                    turn=turn + 1,
+                    new_messages=new_count,
+                )
+                Clock.schedule_once(
+                    lambda _dt, p=participant: append_chat(f"\n[{p} is thinking...]"),
+                    0,
+                )
+                try:
+                    from llm_api import generate_response
+                    result = generate_response(
+                        self.user_data_dir,
+                        messages[-1]["text"],
+                        participant_name=participant,
+                        history=history,
+                        report=lambda event, **data: self._append_report(
+                            "group_dialogue_" + event,
+                            participant=participant,
+                            **data,
+                        ),
+                    )
+                    response = result["response"]
+                    messages.append({"speaker": participant, "text": response})
+                    index = len(messages)
+                    self._append_report(
+                        "group_dialogue_turn_completed",
+                        participant=participant,
+                        turn=turn + 1,
+                        response=response,
+                        unseen_messages=new_count,
+                    )
+                    Clock.schedule_once(
+                        lambda _dt, p=participant, r=response:
+                        append_chat(f"{p}:\n{r}"),
+                        0,
+                    )
+                except Exception as exc:
+                    self._append_report(
+                        "group_dialogue_turn_failed",
+                        participant=participant,
+                        turn=turn + 1,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    Clock.schedule_once(
+                        lambda _dt, p=participant, e=exc:
+                        append_chat(f"{p} FAILED: {type(e).__name__}: {e}"),
+                        0,
+                    )
+                    break
+                turn += 1
+                if len(participants) > 1 and turn > 0:
+                    index = max(0, index - 1)
+            state["running"] = False
+            Clock.schedule_once(
+                lambda _dt: (
+                    setattr(send, "disabled", False),
+                    setattr(stop, "disabled", True),
+                ),
+                0,
+            )
+            self._append_report(
+                "group_dialogue_stopped",
+                participants=participants,
+                turns=turn,
+                stop_requested=state["stop_requested"],
+            )
+
+        def start_dialogue(*_args: Any) -> None:
+            question = prompt.text.strip()
+            if not question or state["running"]:
+                return
+            prompt.text = ""
+            send.disabled = True
+            stop.disabled = False
+            output.text = "Group dialogue started.\n"
+            from threading import Thread
+            Thread(
+                target=run_dialogue,
+                args=(question,),
+                name="yj64-group-dialogue",
+                daemon=True,
+            ).start()
+
+        send.bind(on_release=start_dialogue)
+        stop.bind(on_release=request_stop)
         close.bind(on_release=lambda *_: popup.dismiss())
         popup.open()
 
