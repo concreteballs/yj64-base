@@ -25,7 +25,7 @@ FILE: main.py BEGIN ALLOWED
             orientation="vertical",
             spacing=8,
             size_hint_y=None,
-            height=220,
+            height=280,
         )
         participant_column.add_widget(Label(
             text="PARTICIPANTS",
@@ -45,6 +45,13 @@ FILE: main.py BEGIN ALLOWED
             )
             self.participant_buttons[participant_name] = button
             participant_column.add_widget(button)
+        dialogue_button = Button(
+            text="START GROUP DIALOGUE",
+            size_hint_y=None,
+            height=58,
+        )
+        dialogue_button.bind(on_release=self._open_group_dialogue)
+        participant_column.add_widget(dialogue_button)
         root.add_widget(participant_column)
         self._refresh_participant_buttons()
 END ALLOWED
@@ -178,7 +185,8 @@ FILE: main.py BEGIN ALLOWED
             hint_text=f"Message to {participant_name}...",
             multiline=True,
             size_hint_y=None,
-            height=90,
+            height=110,
+            write_tab=False,
         )
         send = Button(text="SEND", size_hint_y=None, height=54)
         close = Button(text="CLOSE", size_hint_y=None, height=54)
@@ -269,6 +277,188 @@ FILE: main.py BEGIN ALLOWED
         send.bind(on_release=send_message)
         close.bind(on_release=lambda *_: popup.dismiss())
         popup.open()
+
+    def _open_group_dialogue(self, *_: Any) -> None:
+        participants = [
+            name
+            for name in ("Participant 1", "Participant 2", "Participant 3")
+            if self._participant_config_status(name)["configured"]
+        ]
+        if len(participants) < 2:
+            self._append_report(
+                "group_dialogue_start_rejected",
+                reason="at_least_two_participants_required",
+                participants=participants,
+            )
+            self.status.text = "Configure at least two participants first."
+            return
+
+        self._append_report(
+            "group_dialogue_opened",
+            participants=participants,
+        )
+        content = BoxLayout(orientation="vertical", spacing=8, padding=12)
+        output = TextInput(
+            text="Group dialogue is ready.\n",
+            readonly=True,
+            multiline=True,
+        )
+        prompt = TextInput(
+            hint_text="Your question to the participants...",
+            multiline=True,
+            size_hint_y=None,
+            height=110,
+            write_tab=False,
+        )
+        controls = BoxLayout(
+            spacing=8,
+            size_hint_y=None,
+            height=54,
+        )
+        send = Button(text="START", size_hint_x=0.5)
+        stop = Button(text="STOP DIALOGUE", size_hint_x=0.5, disabled=True)
+        controls.add_widget(send)
+        controls.add_widget(stop)
+        close = Button(text="CLOSE", size_hint_y=None, height=54)
+        content.add_widget(output)
+        content.add_widget(prompt)
+        content.add_widget(controls)
+        content.add_widget(close)
+
+        popup = Popup(
+            title="GROUP DIALOGUE",
+            content=content,
+            size_hint=(0.95, 0.86),
+            auto_dismiss=False,
+        )
+
+        state = {
+            "running": False,
+            "stop_requested": False,
+        }
+
+        def append_chat(text_value: str) -> None:
+            output.text = output.text.rstrip() + "\n" + text_value + "\n"
+
+        def request_stop(*_args: Any) -> None:
+            state["stop_requested"] = True
+            stop.disabled = True
+            self._append_report("group_dialogue_stop_requested")
+            append_chat("[STOP REQUESTED] Waiting for the current request to finish.")
+
+        def run_dialogue(question: str) -> None:
+            messages: list[dict[str, str]] = [
+                {"speaker": "Owner", "text": question}
+            ]
+            seen_by = {name: 0 for name in participants}
+            turn = 0
+            state["running"] = True
+            state["stop_requested"] = False
+            self._append_report(
+                "group_dialogue_started",
+                participants=participants,
+                question=question,
+            )
+
+            while not state["stop_requested"]:
+                participant = participants[turn % len(participants)]
+                status = self._participant_config_status(participant)
+                history: list[dict[str, str]] = []
+                for item in messages:
+                    role = "assistant" if item["speaker"] == participant else "user"
+                    history.append({
+                        "role": role,
+                        "content": f"{item['speaker']}: {item['text']}",
+                    })
+                new_count = len(messages) - seen_by[participant]
+                self._append_report(
+                    "group_dialogue_turn_started",
+                    participant=participant,
+                    turn=turn + 1,
+                    new_messages=new_count,
+                )
+                Clock.schedule_once(
+                    lambda _dt, p=participant: append_chat(f"\n[{p} is thinking...]"),
+                    0,
+                )
+                try:
+                    from llm_api import generate_response
+                    result = generate_response(
+                        self.user_data_dir,
+                        messages[-1]["text"],
+                        participant_name=participant,
+                        history=history,
+                        report=lambda event, **data: self._append_report(
+                            "group_dialogue_" + event,
+                            participant=participant,
+                            **data,
+                        ),
+                    )
+                    response = result["response"]
+                    messages.append({"speaker": participant, "text": response})
+                    seen_by[participant] = len(messages)
+                    self._append_report(
+                        "group_dialogue_turn_completed",
+                        participant=participant,
+                        turn=turn + 1,
+                        response=response,
+                        unseen_messages=new_count,
+                    )
+                    Clock.schedule_once(
+                        lambda _dt, p=participant, r=response:
+                        append_chat(f"{p}:\n{r}"),
+                        0,
+                    )
+                except Exception as exc:
+                    self._append_report(
+                        "group_dialogue_turn_failed",
+                        participant=participant,
+                        turn=turn + 1,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                    Clock.schedule_once(
+                        lambda _dt, p=participant, e=exc:
+                        append_chat(f"{p} FAILED: {type(e).__name__}: {e}"),
+                        0,
+                    )
+                    break
+                turn += 1
+            state["running"] = False
+            Clock.schedule_once(
+                lambda _dt: (
+                    setattr(send, "disabled", False),
+                    setattr(stop, "disabled", True),
+                ),
+                0,
+            )
+            self._append_report(
+                "group_dialogue_stopped",
+                participants=participants,
+                turns=turn,
+                stop_requested=state["stop_requested"],
+            )
+
+        def start_dialogue(*_args: Any) -> None:
+            question = prompt.text.strip()
+            if not question or state["running"]:
+                return
+            prompt.text = ""
+            send.disabled = True
+            stop.disabled = False
+            output.text = "Group dialogue started.\n"
+            from threading import Thread
+            Thread(
+                target=run_dialogue,
+                args=(question,),
+                name="yj64-group-dialogue",
+                daemon=True,
+            ).start()
+
+        send.bind(on_release=start_dialogue)
+        stop.bind(on_release=request_stop)
+        close.bind(on_release=lambda *_: popup.dismiss())
+        popup.open()
 END ALLOWED
 ============================================================
 🟡 ИЗМЕНЕНИЕ: LLM API — отдельные конфигурационные файлы участников.
@@ -326,13 +516,13 @@ def generate_response(
     config = load_config(user_data_dir, participant_name=participant_name)
 END ALLOWED
 FILE: llm_api.py BEGIN ALLOWED
-def test_llm_api(
+def generate_response(
     user_data_dir: str | Path,
+    prompt: str,
     report: Any = None,
     participant_name: str = "Owner",
+    history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    _report(report, "api_config_loaded")
-    config = load_config(user_data_dir, participant_name=participant_name)
 END ALLOWED
 ============================================================
 🟢 ГОТОВО: LLM SETTINGS — отдельное сохранение настроек участника.
@@ -438,7 +628,7 @@ if __name__ == "__main__":
 
 END ALLOWED
 ============================================================ КОНЕЦ ОПЕРАЦИОННОГО СТОЛА
-EXPECTED-GIT-BLOB-SHA:main.py=cfa9cc1f00e7d3ccccf5a9b390b6857271ff956e
-EXPECTED-GIT-BLOB-SHA:llm_api.py=e22f29458c92620e193f779e9b0f0eefa8216655
+EXPECTED-GIT-BLOB-SHA:main.py=d55a8801b111129ca3043f2e6cb2d5591d480086
+EXPECTED-GIT-BLOB-SHA:llm_api.py=ce4621b11efe43a2d339129beb4730a201ff2ae2
 EXPECTED-GIT-BLOB-SHA:llm_settings.py=3beec5e8cc288d8254095831b6829a811af8f7d2
 EXPECTED-GIT-BLOB-SHA:tools/verify_guard.py=887269e44f5fbffc093de87d02e7bf960f3e138b
