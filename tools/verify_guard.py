@@ -33,7 +33,7 @@ def main() -> int:
     for match in sections:
         path = match.group("path")
         expected = match.group("content")
-        if "ЗДЕСЬ ДОЛЖЕН НАХОДИТЬСЯ" in expected:
+        if "ЗДЕСЬ " + "ДОЛЖЕН НАХОДИТЬСЯ" in expected:
             raise SystemExit(f"GUARD CHECK FAILED: placeholder remains for {path}")
         working_path = Path(path)
         if not working_path.is_file():
