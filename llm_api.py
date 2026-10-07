@@ -221,8 +221,79 @@ def generate_response(
         raise RuntimeError("LLM API key is not configured")
     if not model:
         raise RuntimeError("LLM model is not configured")
+    if provider in {"openai", "openai-responses"}:
+        endpoint = (
+            config["endpoint"]
+            or "https://api.openai.com/v1/responses"
+        ).rstrip("/")
+        if endpoint.endswith("/chat/completions"):
+            url = endpoint
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+        else:
+            url = endpoint if endpoint.endswith("/responses") else endpoint + "/responses"
+            payload = {
+                "model": model,
+                "input": [{"role": "user", "content": prompt}],
+            }
+        _report(
+            report,
+            "generation_request_started",
+            provider=provider,
+            model=model,
+            endpoint=url,
+            prompt=prompt,
+        )
+        data = _request(
+            "POST",
+            url,
+            {"Authorization": f"Bearer {key}"},
+            payload=payload,
+        )
+        _report(report, "generation_response_received", provider=provider)
+        response_text = str(data.get("output_text") or "").strip()
+        if not response_text:
+            output = data.get("output", [])
+            texts: list[str] = []
+            if isinstance(output, list):
+                for item in output:
+                    if not isinstance(item, dict):
+                        continue
+                    content = item.get("content", [])
+                    if not isinstance(content, list):
+                        continue
+                    for part in content:
+                        if isinstance(part, dict) and part.get("text") is not None:
+                            texts.append(str(part["text"]))
+            response_text = "".join(texts).strip()
+        if not response_text:
+            choices = data.get("choices", [])
+            if isinstance(choices, list) and choices:
+                message = choices[0].get("message", {})
+                if isinstance(message, dict):
+                    response_text = str(message.get("content") or "").strip()
+        if not response_text:
+            raise RuntimeError(
+                f"OpenAI returned no text: {json.dumps(data, ensure_ascii=False)[:1200]}"
+            )
+        _report(
+            report,
+            "generation_completed",
+            provider=provider,
+            model=model,
+            response=response_text,
+        )
+        return {
+            "provider": config["provider"],
+            "model": model,
+            "prompt": prompt,
+            "response": response_text,
+        }
+
     if provider not in {"gemini", "google", "google-gemini"}:
-        raise RuntimeError("Chat currently supports Gemini only")
+        raise RuntimeError(f"Unsupported LLM provider: {config['provider']}")
 
     endpoint = (
         config["endpoint"]
