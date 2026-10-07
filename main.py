@@ -375,6 +375,7 @@ class YJ64BaseApp(App):
         self._append_report("llm_chat_send_started", prompt=prompt)
         self.status.text = "Sending chat message to LLM..."
         self.chat_input.text = ""
+        self.chat_generation_active = True
 
         def run_chat() -> None:
             try:
@@ -415,9 +416,12 @@ class YJ64BaseApp(App):
                 )
 
             def finish(*_args: Any) -> None:
+                self.chat_generation_active = False
                 self._append_report(event[0], **event[1])
                 self.chat_output.text = report
                 self.status.text = report
+                if self.dialog_stop_requested:
+                    self.dialog_status.text = "Dialog stopped. Current response finished; only Owner can send the next message."
 
             Clock.schedule_once(finish, 0)
 
