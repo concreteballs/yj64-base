@@ -19,7 +19,7 @@
 ТОЧКА ЗАПУСКА BUILD: Android Build должен запускаться только изменением PROTECTED-LINE-GUARD. Изменения любых других файлов сами по себе не должны автоматически запускать Android Build. Перед сборкой CI обязан проверить точное совпадение каждого разрешённого фрагмента Guard с соответствующим рабочим файлом. При расхождении Build должен завершиться до build-time patching.
 ПЕРЕД КАЖДЫМ РЕДАКТИРОВАНИЕМ: Сначала показать пользователю предлагаемые изменения и получить явное согласование. Не редактировать рабочий файл до согласования.
 ============================================================ НАЧАЛО ОПЕРАЦИОННОГО СТОЛА
-🟡 ИЗМЕНЕНИЕ: BASELINE main.py — отдельные кнопки настроек участников.
+🟡 ИЗМЕНЕНИЕ: BASELINE main.py — отдельные настройки участников.
 FILE: main.py BEGIN ALLOWED
         participant_column = BoxLayout(
             orientation="vertical",
@@ -46,7 +46,8 @@ FILE: main.py BEGIN ALLOWED
             self.participant_buttons[participant_name] = button
             participant_column.add_widget(button)
         root.add_widget(participant_column)
-
+END ALLOWED
+FILE: main.py BEGIN ALLOWED
     def _open_participant_settings(self, participant_name: str) -> None:
         self._append_report(
             "participant_settings_opened",
@@ -61,11 +62,9 @@ FILE: main.py BEGIN ALLOWED
                 participant=participant_name,
             ),
         ).open()
-
-
 END ALLOWED
 ============================================================
-🟡 ИЗМЕНЕНИЕ: LLM API — отдельный конфиг участника при сохранении рабочего API Owner.
+🟡 ИЗМЕНЕНИЕ: LLM API — отдельные конфигурационные файлы участников.
 FILE: llm_api.py BEGIN ALLOWED
 def _participant_config_path(
     user_data_dir: str | Path,
@@ -115,7 +114,8 @@ def save_config(
         json.dumps(config, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-
+END ALLOWED
+FILE: llm_api.py BEGIN ALLOWED
 def generate_response(
     user_data_dir: str | Path,
     prompt: str,
@@ -124,7 +124,15 @@ def generate_response(
 ) -> dict[str, Any]:
     _report(report, "generation_config_loaded")
     config = load_config(user_data_dir, participant_name=participant_name)
-
+END ALLOWED
+FILE: llm_api.py BEGIN ALLOWED
+def test_llm_api(
+    user_data_dir: str | Path,
+    report: Any = None,
+    participant_name: str = "Owner",
+) -> dict[str, Any]:
+    _report(report, "api_config_loaded")
+    config = load_config(user_data_dir, participant_name=participant_name)
 END ALLOWED
 ============================================================
 🟡 ИЗМЕНЕНИЕ: LLM SETTINGS — отдельное сохранение настроек участника.
@@ -137,7 +145,11 @@ FILE: llm_settings.py BEGIN ALLOWED
             self.user_data_dir,
             participant_name=self.participant_name,
         )
-
+END ALLOWED
+FILE: llm_settings.py BEGIN ALLOWED
+            text=f"{self.participant_name} / LLM MODEL / API CONNECTION",
+END ALLOWED
+FILE: llm_settings.py BEGIN ALLOWED
         save_config(
             self.user_data_dir,
             {
@@ -149,8 +161,14 @@ FILE: llm_settings.py BEGIN ALLOWED
             participant_name=self.participant_name,
         )
 END ALLOWED
+FILE: llm_settings.py BEGIN ALLOWED
+                result = test_llm_api(
+                    self.user_data_dir,
+                    participant_name=self.participant_name,
+                )
+END ALLOWED
 ============================================================
-🟡 ИЗМЕНЕНИЕ: GUARD VERIFIER — проверка фрагментов и целостности файлов.
+🟡 ИЗМЕНЕНИЕ: GUARD VERIFIER — блокировка Build при несовпадении.
 FILE: tools/verify_guard.py BEGIN ALLOWED
 #!/usr/bin/env python3
 """Verify protected fragments and whole-file Git blob identities before Android build."""
@@ -187,7 +205,7 @@ def main() -> int:
     for match in sections:
         path = match.group("path")
         expected = match.group("content")
-        if "[ЗДЕСЬ ДОЛЖЕН НАХОДИТЬСЯ" in expected:
+        if "ЗДЕСЬ ДОЛЖЕН НАХОДИТЬСЯ" in expected:
             raise SystemExit(f"GUARD CHECK FAILED: placeholder remains for {path}")
         working_path = Path(path)
         if not working_path.is_file():
@@ -223,10 +241,13 @@ END ALLOWED
 EXPECTED-GIT-BLOB-SHA:main.py=4333073e15d0d8d51b9fd1ce002173da00558621
 EXPECTED-GIT-BLOB-SHA:llm_api.py=40b896505614388427137e7cc98c07c39310fa86
 EXPECTED-GIT-BLOB-SHA:llm_settings.py=3beec5e8cc288d8254095831b6829a811af8f7d2
-EXPECTED-GIT-BLOB-SHA:tools/verify_guard.py=b83a07fd10735e03949d0f1fb3dbcb795e0a5da2
+EXPECTED-GIT-BLOB-SHA:tools/verify_guard.py=05c5d8600199f63d68ade20688bbc75778ec3020
+🟢 CI CONFIGURED: Android Build workflow is triggered only by PROTECTED-LINE-GUARD.
 ============================================================ ОЧЕРЕДЬ
 🟢 ГОТОВО Рабочая LLM/API сохранена.
 🟢 ГОТОВО Отдельная конфигурация LLM для Participant 1/2/3 добавлена.
-🟡 ПРЕДЛОЖЕНИЕ Подключить реальный транспорт пользовательского устройства.
+🟢 ГОТОВО Guard verifier добавлен.
+🟢 ГОТОВО CI проверяет Guard до Android Build.
+🟡 ПРЕДЛОЖЕНИЕ Подключить реальный транспорт пользовательского устройства отдельным изменением.
 🔴 ПРОБЛЕМА Любое расхождение Guard ↔ рабочие файлы.
 ============================================================ КОНЕЦ ОЧЕРЕДИ
