@@ -317,6 +317,66 @@ class YJ64BaseApp(App):
                     ),
                 )
                 report = (
+                    f"User: {prompt}\n"
+                    f"Model: {result['response']}"
+                )
+                event = (
+                    "llm_chat_send_succeeded",
+                    {
+                        "provider": result["provider"],
+                        "model": result["model"],
+                        "prompt": prompt,
+                        "response": result["response"],
+                    },
+                )
+            except Exception as exc:
+                report = (
+                    f"User: {prompt}\n"
+                    "Result: FAILED\n"
+                    f"Error: {type(exc).__name__}: {exc}"
+                )
+                event = (
+                    "llm_chat_send_failed",
+                    {
+                        "prompt": prompt,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
+
+            def finish(*_args: Any) -> None:
+                self._append_report(event[0], **event[1])
+                self.chat_output.text = report
+                self.status.text = report
+
+            Clock.schedule_once(finish, 0)
+
+        from threading import Thread
+        Thread(
+            target=run_chat,
+            name="yj64-llm-chat",
+            daemon=True,
+        ).start()
+
+    def _send_llm_chat(self, *_: Any) -> None:
+        prompt = self.chat_input.text.strip()
+        if not prompt:
+            return
+        self._append_report("llm_chat_send_started", prompt=prompt)
+        self.status.text = "Sending chat message to LLM..."
+        self.chat_input.text = ""
+
+        def run_chat() -> None:
+            try:
+                from llm_api import generate_response
+                result = generate_response(
+                    self.user_data_dir,
+                    prompt,
+                    report=lambda event, **data: self._append_report(
+                        "llm_chat_" + event, **data
+                    ),
+                )
+                report = (
                     f"User: {prompt}
 "
                     f"Model: {result['response']}"
