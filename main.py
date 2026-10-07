@@ -13,6 +13,7 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
+from kivy.uix.popup import Popup
 from kivy.core.window import Window
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
@@ -92,20 +93,21 @@ class YJ64BaseApp(App):
             size_hint_y=None,
             height=180,
         )
-        root.add_widget(self.chat_output)
-
-        root.add_widget(Label(
-            text="PARTICIPANTS: Owner | Participant 1 | Participant 2 | Participant 3",
-            size_hint_y=None,
-            height=42,
-        ))
+        content_row = BoxLayout(
+            orientation="horizontal",
+            spacing=12,
+        )
+        chat_column = BoxLayout(
+            orientation="vertical",
+            spacing=10,
+        )
+        chat_column.add_widget(self.chat_output)
         self.dialog_status = Label(
             text="Dialog ready. Automated participants may continue until stopped.",
             size_hint_y=None,
             height=42,
         )
-        root.add_widget(self.dialog_status)
-
+        chat_column.add_widget(self.dialog_status)
         chat_row = BoxLayout(
             spacing=12,
             size_hint_y=None,
@@ -127,7 +129,36 @@ class YJ64BaseApp(App):
         )
         chat_send.bind(on_release=self._send_llm_chat)
         chat_row.add_widget(chat_send)
-        root.add_widget(chat_row)
+        chat_column.add_widget(chat_row)
+        content_row.add_widget(chat_column)
+
+        participant_column = BoxLayout(
+            orientation="vertical",
+            spacing=8,
+            size_hint_x=None,
+            width=190,
+        )
+        participant_column.add_widget(Label(
+            text="PARTICIPANTS",
+            size_hint_y=None,
+            height=36,
+        ))
+        self.participant_buttons = {}
+        for participant_name in ("Participant 1", "Participant 2", "Participant 3"):
+            button = Button(
+                text=participant_name,
+                size_hint_y=None,
+                height=54,
+            )
+            button.bind(
+                on_release=lambda _button, name=participant_name:
+                self._open_participant_settings(name)
+            )
+            self.participant_buttons[participant_name] = button
+            participant_column.add_widget(button)
+        participant_column.add_widget(Label())
+        content_row.add_widget(participant_column)
+        root.add_widget(content_row)
 
         self.stop_dialog_button = Button(
             text="STOP DIALOG",
@@ -147,6 +178,21 @@ class YJ64BaseApp(App):
         Clock.schedule_once(self._ensure_service_started, 0.5)
         Clock.schedule_interval(self._refresh_status, 1.0)
         return root
+
+    def _open_participant_settings(self, participant_name: str) -> None:
+        self._append_report(
+            "participant_settings_opened",
+            participant=participant_name,
+        )
+        from llm_settings import LLMSettingsPopup
+        LLMSettingsPopup(
+            self.user_data_dir,
+            participant_name=participant_name,
+            on_report=lambda event: self._append_report(
+                "participant_" + event,
+                participant=participant_name,
+            ),
+        ).open()
 
     def _process_name(self) -> str:
         try:
