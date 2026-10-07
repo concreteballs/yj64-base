@@ -13,7 +13,11 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
+from kivy.core.window import Window
 from kivy.uix.label import Label
+from kivy.uix.textinput import TextInput
+
+Window.softinput_mode = "below_target"
 
 SERVICE_CLASS = "org.blackmirror.blackmirror.ServiceInternal"
 MONITOR_ACTIVITY_CLASS = "org.blackmirror.blackmirror.MonitorActivity"
@@ -73,6 +77,43 @@ class YJ64BaseApp(App):
         )
         generation_button.bind(on_release=self._test_llm_generation)
         root.add_widget(generation_button)
+
+        root.add_widget(Label(
+            text="LLM CHAT",
+            size_hint_y=None,
+            height=42,
+        ))
+        self.chat_output = TextInput(
+            text="The successful generation test will appear here.",
+            readonly=True,
+            multiline=True,
+            size_hint_y=None,
+            height=180,
+        )
+        root.add_widget(self.chat_output)
+
+        chat_row = BoxLayout(
+            spacing=12,
+            size_hint_y=None,
+            height=64,
+        )
+        self.chat_input = TextInput(
+            hint_text="Write a message...",
+            multiline=True,
+            write_tab=False,
+            input_type="text",
+            keyboard_suggestions=True,
+        )
+        self.chat_input.bind(focus=self._chat_input_focus_changed)
+        chat_row.add_widget(self.chat_input)
+        chat_send = Button(
+            text="SEND",
+            size_hint_x=None,
+            width=120,
+        )
+        chat_send.bind(on_release=self._send_llm_chat)
+        chat_row.add_widget(chat_send)
+        root.add_widget(chat_row)
 
         self._write_main_pid()
         self._append_report(
@@ -228,6 +269,7 @@ class YJ64BaseApp(App):
         self.status.text = "Testing LLM generation..."
 
         def run_test() -> None:
+            chat_text = ""
             try:
                 from llm_api import generate_test_response
                 result = generate_test_response(
@@ -236,12 +278,18 @@ class YJ64BaseApp(App):
                         "llm_generation_" + event, **data
                     ),
                 )
+                chat_text = result["response"]
                 report = (
-                    "YJ-64 LLM GENERATION TEST\n"
-                    f"Provider: {result['provider']}\n"
-                    f"Model: {result['model']}\n"
-                    f"Prompt: {result['prompt']}\n"
-                    "Result: SUCCESS\n"
+                    "YJ-64 LLM GENERATION TEST
+"
+                    f"Provider: {result['provider']}
+"
+                    f"Model: {result['model']}
+"
+                    f"Prompt: {result['prompt']}
+"
+                    "Result: SUCCESS
+"
                     f"Response: {result['response']}"
                 )
                 event = (
@@ -255,10 +303,13 @@ class YJ64BaseApp(App):
                 )
             except Exception as exc:
                 report = (
-                    "YJ-64 LLM GENERATION TEST\n"
-                    "Result: FAILED\n"
+                    "YJ-64 LLM GENERATION TEST
+"
+                    "Result: FAILED
+"
                     f"Error: {type(exc).__name__}: {exc}"
                 )
+                chat_text = report
                 event = (
                     "llm_generation_test_failed",
                     {
@@ -270,6 +321,7 @@ class YJ64BaseApp(App):
             def finish(*_args: Any) -> None:
                 self._append_report(event[0], **event[1])
                 self._copy_to_clipboard(report)
+                self.chat_output.text = chat_text
                 self.status.text = report
 
             Clock.schedule_once(finish, 0)
@@ -278,6 +330,72 @@ class YJ64BaseApp(App):
         Thread(
             target=run_test,
             name="yj64-llm-generation-test",
+            daemon=True,
+        ).start()
+
+    def _chat_input_focus_changed(self, _instance: Any, focused: bool) -> None:
+        self._append_report("llm_chat_input_focus_changed", focused=focused)
+
+    def _send_llm_chat(self, *_: Any) -> None:
+        prompt = self.chat_input.text.strip()
+        if not prompt:
+            return
+        self._append_report("llm_chat_send_started", prompt=prompt)
+        self.status.text = "Sending chat message to LLM..."
+        self.chat_input.text = ""
+
+        def run_chat() -> None:
+            try:
+                from llm_api import generate_response
+                result = generate_response(
+                    self.user_data_dir,
+                    prompt,
+                    report=lambda event, **data: self._append_report(
+                        "llm_chat_" + event, **data
+                    ),
+                )
+                report = (
+                    f"User: {prompt}
+"
+                    f"Model: {result['response']}"
+                )
+                event = (
+                    "llm_chat_send_succeeded",
+                    {
+                        "provider": result["provider"],
+                        "model": result["model"],
+                        "prompt": prompt,
+                        "response": result["response"],
+                    },
+                )
+            except Exception as exc:
+                report = (
+                    f"User: {prompt}
+"
+                    "Result: FAILED
+"
+                    f"Error: {type(exc).__name__}: {exc}"
+                )
+                event = (
+                    "llm_chat_send_failed",
+                    {
+                        "prompt": prompt,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
+
+            def finish(*_args: Any) -> None:
+                self._append_report(event[0], **event[1])
+                self.chat_output.text = report
+                self.status.text = report
+
+            Clock.schedule_once(finish, 0)
+
+        from threading import Thread
+        Thread(
+            target=run_chat,
+            name="yj64-llm-chat",
             daemon=True,
         ).start()
 
