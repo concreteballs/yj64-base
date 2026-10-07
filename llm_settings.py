@@ -24,19 +24,24 @@ class LLMSettingsPopup(Popup):
         self,
         user_data_dir: str | Path,
         on_test: Callable[[], None] | None = None,
+        participant_name: str = "Owner",
         on_report: Callable[[str], None] | None = None,
         **kwargs: Any,
     ) -> None:
         self.user_data_dir = Path(user_data_dir)
+        self.participant_name = participant_name
         self.on_test = on_test
         self.on_report = on_report
         self._report("settings_init_started")
-        config = load_config(self.user_data_dir)
+        config = load_config(
+            self.user_data_dir,
+            participant_name=self.participant_name,
+        )
         self._report("settings_config_loaded")
 
         content = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(7))
         content.add_widget(Label(
-            text="LLM MODEL / API CONNECTION",
+            text=f"{self.participant_name} / LLM MODEL / API CONNECTION",
             bold=True,
             size_hint_y=None,
             height=dp(36),
@@ -132,6 +137,7 @@ class LLMSettingsPopup(Popup):
                 "endpoint": self.endpoint.text.strip(),
                 "api_key": self.api_key.text,
             },
+            participant_name=self.participant_name,
         )
         self.status.text = "Settings saved."
     
@@ -142,7 +148,10 @@ class LLMSettingsPopup(Popup):
             self.on_test()
         else:
             try:
-                result = test_llm_api(self.user_data_dir)
+                result = test_llm_api(
+                    self.user_data_dir,
+                    participant_name=self.participant_name,
+                )
                 self.status.text = result["result"]
             except Exception as exc:
                 self.status.text = f"FAILED: {type(exc).__name__}: {exc}"
