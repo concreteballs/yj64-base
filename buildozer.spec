@@ -14,7 +14,7 @@ android.ndk_api = 24
 android.ndk = 25b
 android.accept_sdk_license = True
 android.archs = arm64-v8a
-android.permissions = INTERNET,FOREGROUND_SERVICE,FOREGROUND_SERVICE_SPECIAL_USE
+android.permissions = INTERNET,FOREGROUND_SERVICE,FOREGROUND_SERVICE_SPECIAL_USE,RECORD_AUDIO
 services = internal:services/internal_monitor.py:foreground:sticky:foregroundServiceType=specialUse
 android.debug_artifact = apk
 android.add_src = android_src
