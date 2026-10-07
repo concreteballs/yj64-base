@@ -734,3 +734,8 @@ MAIN_DIALOG_FINISH_NEW = """            def finish(*_args: Any) -> None:
                 if self.dialog_stop_requested:
                     self.dialog_status.text = "Dialog stopped. Current response finished; only Owner can send the next message."
 """
+
+
+# Automatic APK build for the monitor-api branch
+WORKFLOW_ANDROID_BRANCHES_OLD = "    branches: [main, 'work/**']\n"
+WORKFLOW_ANDROID_BRANCHES_NEW = "    branches: [main, 'work/**', 'monitor-api']\n"
