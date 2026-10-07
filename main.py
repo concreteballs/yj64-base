@@ -16,6 +16,7 @@ from kivy.uix.button import Button
 from kivy.core.window import Window
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
+from kivy.uix.popup import Popup
 
 Window.softinput_mode = "below_target"
 
@@ -135,11 +136,12 @@ class YJ64BaseApp(App):
             )
             button.bind(
                 on_release=lambda _button, name=participant_name:
-                self._open_participant_settings(name)
+                self._open_participant_menu(name)
             )
             self.participant_buttons[participant_name] = button
             participant_column.add_widget(button)
         root.add_widget(participant_column)
+        self._refresh_participant_buttons()
 
         self._write_main_pid()
         self._append_report(
@@ -150,7 +152,101 @@ class YJ64BaseApp(App):
 
         Clock.schedule_once(self._ensure_service_started, 0.5)
         Clock.schedule_interval(self._refresh_status, 1.0)
+        Clock.schedule_interval(self._refresh_participant_buttons, 1.0)
         return root
+
+    def _participant_config_status(self, participant_name: str) -> dict[str, str | bool]:
+        from llm_api import load_config, participant_config_exists
+
+        exists = participant_config_exists(
+            self.user_data_dir,
+            participant_name=participant_name,
+        )
+        config = load_config(
+            self.user_data_dir,
+            participant_name=participant_name,
+        ) if exists else {}
+        mode = str(config.get("mode") or "llm").strip().lower()
+        configured = bool(
+            exists
+            and (
+                mode == "device"
+                or (
+                    str(config.get("api_key") or "").strip()
+                    and str(config.get("model") or "").strip()
+                )
+            )
+        )
+        return {
+            "configured": configured,
+            "mode": mode,
+            "provider": str(config.get("provider") or ""),
+            "model": str(config.get("model") or ""),
+        }
+
+    def _refresh_participant_buttons(self, *_: Any) -> None:
+        for participant_name, button in self.participant_buttons.items():
+            status = self._participant_config_status(participant_name)
+            if status["configured"]:
+                button.background_color = (0.2, 0.8, 0.2, 1)
+                button.text = f"{participant_name}  [CONNECTED]"
+            else:
+                button.background_color = (1, 1, 1, 1)
+                button.text = participant_name
+
+    def _open_participant_menu(self, participant_name: str) -> None:
+        status = self._participant_config_status(participant_name)
+        self._append_report(
+            "participant_menu_opened",
+            participant=participant_name,
+            configured=status["configured"],
+            mode=status["mode"],
+            provider=status["provider"],
+            model=status["model"],
+        )
+
+        content = BoxLayout(
+            orientation="vertical",
+            spacing=8,
+            padding=12,
+        )
+        title = Label(
+            text=f"{participant_name}\n"
+                 f"{status['provider'] or 'not configured'} / "
+                 f"{status['model'] or 'no model'}",
+            size_hint_y=None,
+            height=70,
+        )
+        content.add_widget(title)
+
+        write_button = Button(text="WRITE / GET ANSWER", size_hint_y=None, height=56)
+        write_button.bind(
+            on_release=lambda *_: (
+                popup.dismiss(),
+                self._open_participant_chat(participant_name),
+            )
+        )
+        content.add_widget(write_button)
+
+        settings_button = Button(text="SETTINGS", size_hint_y=None, height=56)
+        settings_button.bind(
+            on_release=lambda *_: (
+                popup.dismiss(),
+                self._open_participant_settings(participant_name),
+            )
+        )
+        content.add_widget(settings_button)
+
+        close_button = Button(text="CLOSE", size_hint_y=None, height=56)
+        close_button.bind(on_release=lambda *_: popup.dismiss())
+        content.add_widget(close_button)
+
+        popup = Popup(
+            title=participant_name,
+            content=content,
+            size_hint=(0.9, 0.55),
+        )
+        popup.open()
 
     def _open_participant_settings(self, participant_name: str) -> None:
         self._append_report(
@@ -166,6 +262,119 @@ class YJ64BaseApp(App):
                 participant=participant_name,
             ),
         ).open()
+
+    def _open_participant_chat(self, participant_name: str) -> None:
+        status = self._participant_config_status(participant_name)
+        self._append_report(
+            "participant_chat_opened",
+            participant=participant_name,
+            configured=status["configured"],
+            mode=status["mode"],
+            provider=status["provider"],
+            model=status["model"],
+        )
+
+        content = BoxLayout(orientation="vertical", spacing=8, padding=12)
+        output = TextInput(
+            text=f"{participant_name} response will appear here.",
+            readonly=True,
+            multiline=True,
+        )
+        prompt = TextInput(
+            hint_text=f"Message to {participant_name}...",
+            multiline=True,
+            size_hint_y=None,
+            height=90,
+        )
+        send = Button(text="SEND", size_hint_y=None, height=54)
+        close = Button(text="CLOSE", size_hint_y=None, height=54)
+
+        content.add_widget(output)
+        content.add_widget(prompt)
+        content.add_widget(send)
+        content.add_widget(close)
+
+        popup = Popup(
+            title=f"{participant_name} CHAT",
+            content=content,
+            size_hint=(0.94, 0.72),
+        )
+
+        def send_message(*_args: Any) -> None:
+            message = prompt.text.strip()
+            if not message:
+                return
+            prompt.text = ""
+            send.disabled = True
+            output.text = "Sending..."
+            self._append_report(
+                "participant_request_started",
+                participant=participant_name,
+                prompt=message,
+                provider=status["provider"],
+                model=status["model"],
+            )
+
+            def run_chat() -> None:
+                try:
+                    from llm_api import generate_response
+                    self._append_report(
+                        "participant_api_request_sent",
+                        participant=participant_name,
+                        provider=status["provider"],
+                        model=status["model"],
+                    )
+                    result = generate_response(
+                        self.user_data_dir,
+                        message,
+                        participant_name=participant_name,
+                        report=lambda event, **data: self._append_report(
+                            "participant_" + event,
+                            participant=participant_name,
+                            **data,
+                        ),
+                    )
+                    response = result["response"]
+                    event = (
+                        "participant_api_response_received",
+                        {
+                            "participant": participant_name,
+                            "provider": result["provider"],
+                            "model": result["model"],
+                            "response": response,
+                        },
+                    )
+                    text_value = response
+                except Exception as exc:
+                    event = (
+                        "participant_request_failed",
+                        {
+                            "participant": participant_name,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        },
+                    )
+                    text_value = (
+                        f"FAILED: {type(exc).__name__}: {exc}"
+                    )
+
+                def finish(*_finish_args: Any) -> None:
+                    self._append_report(event[0], **event[1])
+                    output.text = text_value
+                    send.disabled = False
+
+                Clock.schedule_once(finish, 0)
+
+            from threading import Thread
+            Thread(
+                target=run_chat,
+                name=f"yj64-{participant_name.lower().replace(' ', '-')}-chat",
+                daemon=True,
+            ).start()
+
+        send.bind(on_release=send_message)
+        close.bind(on_release=lambda *_: popup.dismiss())
+        popup.open()
 
     def _process_name(self) -> str:
         try:
