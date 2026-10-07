@@ -358,3 +358,326 @@ LLM_MAIN_GENERATION_METHOD_NEW = """    def _test_llm_generation(self, *_: Any) 
         ).start()
 
 """
+
+
+# Android chat / IME port from kerosene-rose2
+CHAT_IMPORT_OLD = "from kivy.uix.label import Label\n"
+CHAT_IMPORT_NEW = "from kivy.core.window import Window\nfrom kivy.uix.label import Label\nfrom kivy.uix.textinput import TextInput\n"
+CHAT_SOFTINPUT_MARKER = "SERVICE_CLASS = \"org.blackmirror.blackmirror.ServiceInternal\"\n"
+CHAT_SOFTINPUT_INSERT = "Window.softinput_mode = \"below_target\"\n\n"
+CHAT_UI_OLD = """        generation_button.bind(on_release=self._test_llm_generation)
+        root.add_widget(generation_button)
+"""
+CHAT_UI_NEW = """        generation_button.bind(on_release=self._test_llm_generation)
+        root.add_widget(generation_button)
+
+        root.add_widget(Label(
+            text="LLM CHAT",
+            size_hint_y=None,
+            height=42,
+        ))
+        self.chat_output = TextInput(
+            text="The successful generation test will appear here.",
+            readonly=True,
+            multiline=True,
+            size_hint_y=None,
+            height=180,
+        )
+        root.add_widget(self.chat_output)
+
+        chat_row = BoxLayout(
+            spacing=12,
+            size_hint_y=None,
+            height=64,
+        )
+        self.chat_input = TextInput(
+            hint_text="Write a message...",
+            multiline=True,
+            write_tab=False,
+            input_type="text",
+            keyboard_suggestions=True,
+        )
+        self.chat_input.bind(focus=self._chat_input_focus_changed)
+        chat_row.add_widget(self.chat_input)
+        chat_send = Button(
+            text="SEND",
+            size_hint_x=None,
+            width=120,
+        )
+        chat_send.bind(on_release=self._send_llm_chat)
+        chat_row.add_widget(chat_send)
+        root.add_widget(chat_row)
+"""
+CHAT_GENERATION_METHOD_OLD = """    def _test_llm_generation(self, *_: Any) -> None:
+        self._append_report("llm_generation_test_started")
+        self.status.text = "Testing LLM generation..."
+
+        def run_test() -> None:
+            try:
+                from llm_api import generate_test_response
+                result = generate_test_response(
+                    self.user_data_dir,
+                    report=lambda event, **data: self._append_report(
+                        "llm_generation_" + event, **data
+                    ),
+                )
+                report = (
+                    "YJ-64 LLM GENERATION TEST\n"
+                    f"Provider: {result['provider']}\n"
+                    f"Model: {result['model']}\n"
+                    f"Prompt: {result['prompt']}\n"
+                    "Result: SUCCESS\n"
+                    f"Response: {result['response']}"
+                )
+                event = (
+                    "llm_generation_test_succeeded",
+                    {
+                        "provider": result["provider"],
+                        "model": result["model"],
+                        "prompt": result["prompt"],
+                        "response": result["response"],
+                    },
+                )
+            except Exception as exc:
+                report = (
+                    "YJ-64 LLM GENERATION TEST\n"
+                    "Result: FAILED\n"
+                    f"Error: {type(exc).__name__}: {exc}"
+                )
+                event = (
+                    "llm_generation_test_failed",
+                    {
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
+
+            def finish(*_args: Any) -> None:
+                self._append_report(event[0], **event[1])
+                self._copy_to_clipboard(report)
+                self.status.text = report
+
+            Clock.schedule_once(finish, 0)
+
+        from threading import Thread
+        Thread(
+            target=run_test,
+            name="yj64-llm-generation-test",
+            daemon=True,
+        ).start()
+
+"""
+CHAT_GENERATION_METHOD_NEW = """    def _test_llm_generation(self, *_: Any) -> None:
+        self._append_report("llm_generation_test_started")
+        self.status.text = "Testing LLM generation..."
+
+        def run_test() -> None:
+            chat_text = ""
+            try:
+                from llm_api import generate_test_response
+                result = generate_test_response(
+                    self.user_data_dir,
+                    report=lambda event, **data: self._append_report(
+                        "llm_generation_" + event, **data
+                    ),
+                )
+                chat_text = result["response"]
+                report = (
+                    "YJ-64 LLM GENERATION TEST\n"
+                    f"Provider: {result['provider']}\n"
+                    f"Model: {result['model']}\n"
+                    f"Prompt: {result['prompt']}\n"
+                    "Result: SUCCESS\n"
+                    f"Response: {result['response']}"
+                )
+                event = (
+                    "llm_generation_test_succeeded",
+                    {
+                        "provider": result["provider"],
+                        "model": result["model"],
+                        "prompt": result["prompt"],
+                        "response": result["response"],
+                    },
+                )
+            except Exception as exc:
+                report = (
+                    "YJ-64 LLM GENERATION TEST\n"
+                    "Result: FAILED\n"
+                    f"Error: {type(exc).__name__}: {exc}"
+                )
+                chat_text = report
+                event = (
+                    "llm_generation_test_failed",
+                    {
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
+
+            def finish(*_args: Any) -> None:
+                self._append_report(event[0], **event[1])
+                self._copy_to_clipboard(report)
+                self.chat_output.text = chat_text
+                self.status.text = report
+
+            Clock.schedule_once(finish, 0)
+
+        from threading import Thread
+        Thread(
+            target=run_test,
+            name="yj64-llm-generation-test",
+            daemon=True,
+        ).start()
+
+"""
+CHAT_METHOD = """    def _chat_input_focus_changed(self, _instance: Any, focused: bool) -> None:
+        self._append_report("llm_chat_input_focus_changed", focused=focused)
+
+    def _send_llm_chat(self, *_: Any) -> None:
+        prompt = self.chat_input.text.strip()
+        if not prompt:
+            return
+        self._append_report("llm_chat_send_started", prompt=prompt)
+        self.status.text = "Sending chat message to LLM..."
+        self.chat_input.text = ""
+
+        def run_chat() -> None:
+            try:
+                from llm_api import generate_response
+                result = generate_response(
+                    self.user_data_dir,
+                    prompt,
+                    report=lambda event, **data: self._append_report(
+                        "llm_chat_" + event, **data
+                    ),
+                )
+                report = (
+                    f"User: {prompt}\n"
+                    f"Model: {result['response']}"
+                )
+                event = (
+                    "llm_chat_send_succeeded",
+                    {
+                        "provider": result["provider"],
+                        "model": result["model"],
+                        "prompt": prompt,
+                        "response": result["response"],
+                    },
+                )
+            except Exception as exc:
+                report = (
+                    f"User: {prompt}\n"
+                    "Result: FAILED\n"
+                    f"Error: {type(exc).__name__}: {exc}"
+                )
+                event = (
+                    "llm_chat_send_failed",
+                    {
+                        "prompt": prompt,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                )
+
+            def finish(*_args: Any) -> None:
+                self._append_report(event[0], **event[1])
+                self.chat_output.text = report
+                self.status.text = report
+
+            Clock.schedule_once(finish, 0)
+
+        from threading import Thread
+        Thread(
+            target=run_chat,
+            name="yj64-llm-chat",
+            daemon=True,
+        ).start()
+
+"""
+CHAT_API_MARKER = "def _report(report: Any, event: str, **data: Any) -> None:\n"
+CHAT_API_METHOD = """def generate_response(
+    user_data_dir: str | Path,
+    prompt: str,
+    report: Any = None,
+) -> dict[str, Any]:
+    _report(report, "generation_config_loaded")
+    config = load_config(user_data_dir)
+    provider = config["provider"].strip().lower()
+    model = config["model"].strip()
+    key = config["api_key"].strip()
+    _report(
+        report,
+        "generation_config_checked",
+        provider=provider,
+        model=model,
+        configured=bool(key and model),
+    )
+    if not key:
+        raise RuntimeError("LLM API key is not configured")
+    if not model:
+        raise RuntimeError("LLM model is not configured")
+    if provider not in {"gemini", "google", "google-gemini"}:
+        raise RuntimeError("Chat currently supports Gemini only")
+
+    endpoint = (
+        config["endpoint"]
+        or "https://generativelanguage.googleapis.com/v1beta"
+    ).rstrip("/")
+    url = f"{endpoint}/models/{model}:generateContent"
+    _report(
+        report,
+        "generation_request_started",
+        provider=provider,
+        model=model,
+        endpoint=url,
+        prompt=prompt,
+    )
+    data = _request(
+        "POST",
+        url,
+        {"x-goog-api-key": key},
+        payload={
+            "contents": [
+                {
+                    "parts": [
+                        {"text": prompt},
+                    ],
+                },
+            ],
+        },
+    )
+    _report(report, "generation_response_received", provider=provider)
+    candidates = data.get("candidates", [])
+    if not isinstance(candidates, list) or not candidates:
+        raise RuntimeError(
+            f"Gemini returned no candidates: {json.dumps(data, ensure_ascii=False)[:1200]}"
+        )
+    content = candidates[0].get("content", {})
+    parts = content.get("parts", []) if isinstance(content, dict) else []
+    response_text = "".join(
+        str(part["text"])
+        for part in parts
+        if isinstance(part, dict) and part.get("text") is not None
+    ).strip()
+    if not response_text:
+        raise RuntimeError(
+            f"Gemini returned no text: {json.dumps(data, ensure_ascii=False)[:1200]}"
+        )
+    _report(
+        report,
+        "generation_completed",
+        provider=provider,
+        model=model,
+        response=response_text,
+    )
+    return {
+        "provider": config["provider"],
+        "model": model,
+        "prompt": prompt,
+        "response": response_text,
+    }
+
+
+"""
+CHAT_RECORD_AUDIO_OLD = "android.permissions = INTERNET,FOREGROUND_SERVICE,FOREGROUND_SERVICE_SPECIAL_USE"
+CHAT_RECORD_AUDIO_NEW = "android.permissions = INTERNET,FOREGROUND_SERVICE,FOREGROUND_SERVICE_SPECIAL_USE,RECORD_AUDIO"
