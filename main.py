@@ -115,6 +115,32 @@ class YJ64BaseApp(App):
         chat_row.add_widget(chat_send)
         root.add_widget(chat_row)
 
+        participant_column = BoxLayout(
+            orientation="vertical",
+            spacing=8,
+            size_hint_y=None,
+            height=220,
+        )
+        participant_column.add_widget(Label(
+            text="PARTICIPANTS",
+            size_hint_y=None,
+            height=36,
+        ))
+        self.participant_buttons = {}
+        for participant_name in ("Participant 1", "Participant 2", "Participant 3"):
+            button = Button(
+                text=participant_name,
+                size_hint_y=None,
+                height=54,
+            )
+            button.bind(
+                on_release=lambda _button, name=participant_name:
+                self._open_participant_settings(name)
+            )
+            self.participant_buttons[participant_name] = button
+            participant_column.add_widget(button)
+        root.add_widget(participant_column)
+
         self._write_main_pid()
         self._append_report(
             "base_ui_ready",
@@ -125,6 +151,21 @@ class YJ64BaseApp(App):
         Clock.schedule_once(self._ensure_service_started, 0.5)
         Clock.schedule_interval(self._refresh_status, 1.0)
         return root
+
+    def _open_participant_settings(self, participant_name: str) -> None:
+        self._append_report(
+            "participant_settings_opened",
+            participant=participant_name,
+        )
+        from llm_settings import LLMSettingsPopup
+        LLMSettingsPopup(
+            self.user_data_dir,
+            participant_name=participant_name,
+            on_report=lambda event: self._append_report(
+                "participant_" + event,
+                participant=participant_name,
+            ),
+        ).open()
 
     def _process_name(self) -> str:
         try:
