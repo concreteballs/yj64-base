@@ -161,7 +161,7 @@ public class MonitorActivity extends Activity {
             Toast.makeText(this, "LLM config imported", Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
             append("llm_config_file_import_failed",
-                "{"error_type":"" + escape(e.getClass().getSimpleName()) + ""}");
+                "{\"error_type\":\"" + escape(e.getClass().getSimpleName()) + "\"}");
             Toast.makeText(this, "Import failed: " + e, Toast.LENGTH_LONG).show();
         }
     }
@@ -170,7 +170,7 @@ public class MonitorActivity extends Activity {
         append("last_crash_check_started", "{}");
         String result = lastExitReport();
         append("last_crash_check_completed",
-            "{"report":"" + escape(result) + ""}");
+            "{\"report\":\"" + escape(result) + "\"}");
         copyText(result + "\n\n--- YJ-64 REPORT ---\n" + readReport());
         status.setText(result);
         Toast.makeText(this, "Crash report copied", Toast.LENGTH_SHORT).show();
@@ -217,13 +217,13 @@ public class MonitorActivity extends Activity {
         File result = new File(getFilesDir(), "yj64-test-result.json");
         try {
             if (result.exists()) result.delete();
-            String json = "{"action":"full_test","test_id":"" + testId + ""}";
+            String json = "{\"action\":\"full_test\",\"test_id\":\"" + testId + "\"}";
             try (FileOutputStream out = new FileOutputStream(command, false)) {
                 out.write(json.getBytes(StandardCharsets.UTF_8));
                 out.flush();
                 out.getFD().sync();
             }
-            append("full_test_requested", "{"test_id":"" + testId + ""}");
+            append("full_test_requested", "{\"test_id\":\"" + testId + "\"}");
             status.setText(identityText() + "\n\nFull function test requested...");
             new Thread(() -> waitForFullTest(testId)).start();
         } catch (IOException e) {
@@ -241,7 +241,7 @@ public class MonitorActivity extends Activity {
                     if (text.contains("\"test_id\":\"" + testId + "\"")) {
                         String report = readReport();
                         append("full_test_result_collected",
-                            "{"test_id":"" + testId + ""}");
+                            "{\"test_id\":\"" + testId + "\"}");
                         runOnUiThread(() -> {
                             copyText(report);
                             status.setText(report);
