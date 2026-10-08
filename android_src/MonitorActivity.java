@@ -274,28 +274,6 @@ public class MonitorActivity extends Activity {
         return text.toString();
     }
 
-    private void crashBaseProcess() {
-        int pid = readMainPid();
-        append("main_process_crash_requested",
-            "{\"target_pid\":" + pid
-            + ",\"monitor_pid\":" + Process.myPid()
-            + ",\"monitor_process_name\":\"" + escape(Process.myProcessName()) + "\"}");
-
-        if (pid <= 0 || pid == Process.myPid()) {
-            Toast.makeText(this, "Invalid Base App PID: " + pid, Toast.LENGTH_LONG).show();
-            return;
-        }
-
-        Toast.makeText(this, "Crashing Base App PID " + pid, Toast.LENGTH_SHORT).show();
-        new Thread(() -> {
-            try { Thread.sleep(250); }
-            catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
-            Process.killProcess(pid);
-            runOnUiThread(() -> status.setText(identityText()
-                + "\n\nBASE APP PROCESS WAS KILLED."
-                + "\nMONITOR PROCESS IS STILL ALIVE."));
-        }).start();
-    }
 
     private int readMainPid() {
         try (BufferedReader reader = new BufferedReader(new FileReader(pidFile()))) {
