@@ -292,8 +292,62 @@ def generate_response(
             "response": response_text,
         }
 
-    if provider not in {"gemini", "google", "google-gemini"}:
-        raise RuntimeError(f"Unsupported LLM provider: {config['provider']}")
+    if provider in {"groq", "openrouter"} or provider not in {
+        "gemini", "google", "google-gemini", "openai", "openai-responses"
+    }:
+        defaults = {
+            "groq": "https://api.groq.com/openai/v1",
+            "openrouter": "https://openrouter.ai/api/v1",
+        }
+        base = (config["endpoint"] or defaults.get(provider, "")).rstrip("/")
+        if not base:
+            raise RuntimeError(
+                "Custom provider requires an API endpoint compatible with Chat Completions"
+            )
+        url = base if base.endswith("/chat/completions") else base + "/chat/completions"
+        payload = {
+            "model": model,
+            "messages": history or [{"role": "user", "content": prompt}],
+        }
+        _report(
+            report,
+            "generation_request_started",
+            provider=provider,
+            model=model,
+            endpoint=url,
+            prompt=prompt,
+        )
+        headers = {"Authorization": f"Bearer {key}"}
+        if provider == "openrouter":
+            headers.update({
+                "HTTP-Referer": "https://github.com/concreteballs/yj64-base",
+                "X-Title": "YJ-64",
+            })
+        data = _request("POST", url, headers, payload=payload)
+        _report(report, "generation_response_received", provider=provider)
+        choices = data.get("choices", [])
+        response_text = ""
+        if isinstance(choices, list) and choices:
+            message = choices[0].get("message", {})
+            if isinstance(message, dict):
+                response_text = str(message.get("content") or "").strip()
+        if not response_text:
+            raise RuntimeError(
+                f"{provider} returned no text: {json.dumps(data, ensure_ascii=False)[:1200]}"
+            )
+        _report(
+            report,
+            "generation_completed",
+            provider=provider,
+            model=model,
+            response=response_text,
+        )
+        return {
+            "provider": config["provider"],
+            "model": model,
+            "prompt": prompt,
+            "response": response_text,
+        }
 
     endpoint = (
         config["endpoint"]
@@ -359,6 +413,62 @@ def _report(report: Any, event: str, **data: Any) -> None:
         report(event, **data)
 
 
+def fetch_models(
+    provider: str,
+    api_key: str,
+    endpoint: str = "",
+) -> list[str]:
+    """Return model IDs visible to this API key without saving the key."""
+    provider_id = provider.strip().lower()
+    key = api_key.strip()
+    if not key:
+        raise RuntimeError("LLM API key is not configured")
+
+    if provider_id in {"gemini", "google", "google-gemini"}:
+        base = (endpoint or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+        data = _request("GET", base + "/models", {"x-goog-api-key": key})
+        models = data.get("models", []) if isinstance(data, dict) else []
+        result = []
+        for item in models:
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            methods = item.get("supportedGenerationMethods", [])
+            if methods and "generateContent" not in methods:
+                continue
+            name = str(item["name"])
+            result.append(name[7:] if name.startswith("models/") else name)
+        return sorted(set(result), key=str.casefold)
+
+    defaults = {
+        "openai": "https://api.openai.com/v1",
+        "openai-responses": "https://api.openai.com/v1",
+        "groq": "https://api.groq.com/openai/v1",
+        "openrouter": "https://openrouter.ai/api/v1",
+    }
+    base = (endpoint or defaults.get(provider_id, "")).rstrip("/")
+    if not base:
+        raise RuntimeError("Custom provider requires an API endpoint")
+    for suffix in ("/chat/completions", "/responses"):
+        if base.endswith(suffix):
+            base = base[:-len(suffix)]
+            break
+    models_url = base + "/models"
+    headers = {"Authorization": f"Bearer {key}"}
+    if provider_id == "openrouter":
+        headers.update({
+            "HTTP-Referer": "https://github.com/concreteballs/yj64-base",
+            "X-Title": "YJ-64",
+        })
+    data = _request("GET", models_url, headers)
+    models = data.get("data", []) if isinstance(data, dict) else []
+    ids = [
+        str(item["id"])
+        for item in models
+        if isinstance(item, dict) and item.get("id")
+    ]
+    return sorted(set(ids), key=str.casefold)
+
+
 def test_llm_api(
     user_data_dir: str | Path,
     report: Any = None,
@@ -372,31 +482,24 @@ def test_llm_api(
     if not key:
         raise RuntimeError("LLM API key is not configured")
 
-    if provider in {"openai", "openai-responses"}:
-        endpoint = config["endpoint"] or "https://api.openai.com/v1/responses"
-        base = endpoint.rstrip("/")
-        if base.endswith("/responses"):
-            base = base[:-len("/responses")]
-        elif base.endswith("/chat/completions"):
-            base = base[:-len("/chat/completions")]
-        _report(report, "api_request_started", provider=provider, endpoint=base + "/models")
-        data = _request("GET", base + "/models", {"Authorization": f"Bearer {key}"})
+    if provider in {"openai", "openai-responses", "gemini", "google", "google-gemini", "groq", "openrouter"}:
+        defaults = {
+            "openai": "https://api.openai.com/v1",
+            "openai-responses": "https://api.openai.com/v1",
+            "gemini": "https://generativelanguage.googleapis.com/v1beta",
+            "google": "https://generativelanguage.googleapis.com/v1beta",
+            "google-gemini": "https://generativelanguage.googleapis.com/v1beta",
+            "groq": "https://api.groq.com/openai/v1",
+            "openrouter": "https://openrouter.ai/api/v1",
+        }
+        endpoint = config["endpoint"] or defaults.get(provider, "")
+        _report(report, "api_request_started", provider=provider, endpoint=endpoint)
+        ids = fetch_models(provider, key, endpoint)
         _report(report, "api_request_succeeded", provider=provider)
-        models = data.get("data", []) if isinstance(data, dict) else []
-        ids = [str(x.get("id")) for x in models if isinstance(x, dict) and x.get("id")]
-    elif provider in {"gemini", "google", "google-gemini"}:
-        endpoint = (config["endpoint"] or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
-        _report(report, "api_request_started", provider=provider, endpoint=endpoint + "/models")
-        data = _request("GET", endpoint + "/models", {"x-goog-api-key": key})
-        _report(report, "api_request_succeeded", provider=provider)
-        models = data.get("models", []) if isinstance(data, dict) else []
-        ids = []
-        for item in models:
-            if isinstance(item, dict) and item.get("name"):
-                name = str(item["name"])
-                ids.append(name[7:] if name.startswith("models/") else name)
     else:
-        raise RuntimeError(f"Unsupported LLM provider: {config['provider']}")
+        _report(report, "api_request_started", provider=provider, endpoint=config["endpoint"])
+        ids = fetch_models(provider, key, config["endpoint"])
+        _report(report, "api_request_succeeded", provider=provider)
 
     model = config["model"]
     if model and model not in ids:
