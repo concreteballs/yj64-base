@@ -24,6 +24,8 @@ SERVICE_CLASS = "org.blackmirror.blackmirror.ServiceInternal"
 MONITOR_ACTIVITY_CLASS = "org.blackmirror.blackmirror.MonitorActivity"
 SERVICE_LAUNCH_FLAG = "yj64.internal_agent_launch"
 REPORT_RELATIVE_PATH = Path("yj64-reports") / "yj64-report.jsonl"
+TEST_COMMAND_RELATIVE_PATH = Path("yj64-test-command.json")
+TEST_RESULT_RELATIVE_PATH = Path("yj64-test-result.json")
 
 
 class YJ64BaseApp(App):
@@ -62,6 +64,14 @@ class YJ64BaseApp(App):
         )
         llm_button.bind(on_release=self._test_llm_api)
         root.add_widget(llm_button)
+
+        import_keys_button = Button(
+            text="Import API Keys File",
+            size_hint_y=None,
+            height=72,
+        )
+        import_keys_button.bind(on_release=self._open_monitor)
+        root.add_widget(import_keys_button)
 
         settings_button = Button(
             text="Configure LLM API / Key",
@@ -160,6 +170,7 @@ class YJ64BaseApp(App):
         Clock.schedule_once(self._ensure_service_started, 0.5)
         Clock.schedule_interval(self._refresh_status, 1.0)
         Clock.schedule_interval(self._refresh_participant_buttons, 1.0)
+        Clock.schedule_interval(self._poll_test_command, 0.5)
         return root
 
     def _participant_config_status(self, participant_name: str) -> dict[str, str | bool]:
@@ -846,6 +857,145 @@ class YJ64BaseApp(App):
                 error_type=type(exc).__name__,
                 error=str(exc),
             )
+
+    def _poll_test_command(self, *_: Any) -> None:
+        command_path = Path(self.user_data_dir) / TEST_COMMAND_RELATIVE_PATH
+        if not command_path.is_file():
+            return
+        try:
+            command = json.loads(command_path.read_text(encoding="utf-8"))
+            command_path.unlink()
+        except (OSError, ValueError):
+            return
+        if command.get("action") != "full_test":
+            return
+        test_id = str(command.get("test_id") or uuid.uuid4().hex)
+        self._run_full_function_test(test_id)
+
+    def _run_full_function_test(self, test_id: str) -> None:
+        from threading import Thread
+
+        def step(name: str, action: Any) -> tuple[bool, str]:
+            self._append_report("full_test_step_started", test_id=test_id, step=name)
+            try:
+                result = action()
+                self._append_report(
+                    "full_test_step_completed",
+                    test_id=test_id,
+                    step=name,
+                    result=result,
+                )
+                return True, str(result)
+            except Exception as exc:
+                self._append_report(
+                    "full_test_step_failed",
+                    test_id=test_id,
+                    step=name,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                return False, f"{type(exc).__name__}: {exc}"
+
+        def worker() -> None:
+            self._append_report("full_test_started", test_id=test_id)
+            results: list[str] = []
+
+            ok, value = step("report_storage", lambda: f"report_exists={self.report_path.is_file()}")
+            results.append(f"report_storage: {'PASS' if ok else 'FAIL'} ({value})")
+
+            ok, value = step(
+                "process_identity",
+                lambda: f"pid={os.getpid()},process={self._process_name()}",
+            )
+            results.append(f"process_identity: {'PASS' if ok else 'FAIL'} ({value})")
+
+            def config_check() -> str:
+                from llm_api import load_config
+                config = load_config(self.user_data_dir)
+                if not config.get("api_key"):
+                    raise RuntimeError("LLM API key is not configured")
+                if not config.get("model"):
+                    raise RuntimeError("LLM model is not configured")
+                return f"provider={config.get('provider')},model={config.get('model')}"
+
+            ok, value = step("llm_config", config_check)
+            results.append(f"llm_config: {'PASS' if ok else 'FAIL'} ({value})")
+
+            def api_check() -> str:
+                from llm_api import test_llm_api
+                return str(test_llm_api(
+                    self.user_data_dir,
+                    report=lambda event, **data: self._append_report(
+                        "full_test_llm_api_" + event,
+                        test_id=test_id,
+                        **data,
+                    ),
+                )["result"])
+
+            ok, value = step("llm_api", api_check)
+            results.append(f"llm_api: {'PASS' if ok else 'FAIL'} ({value})")
+
+            def generation_check() -> str:
+                from llm_api import generate_test_response
+                result = generate_test_response(
+                    self.user_data_dir,
+                    report=lambda event, **data: self._append_report(
+                        "full_test_llm_generation_" + event,
+                        test_id=test_id,
+                        **data,
+                    ),
+                )
+                return str(result["response"])
+
+            ok, value = step("llm_generation", generation_check)
+            results.append(f"llm_generation: {'PASS' if ok else 'FAIL'} ({value})")
+
+            ok, value = step(
+                "diagnostic_agent_status",
+                lambda: (
+                    "status_file_present"
+                    if (Path(self.user_data_dir) / "diagnostic-agent-status.json").is_file()
+                    else "status_file_missing"
+                ),
+            )
+            results.append(f"diagnostic_agent_status: {'PASS' if ok else 'FAIL'} ({value})")
+
+            summary = "YJ-64 FULL FUNCTION TEST\n" + "\n".join(results)
+            self._append_report("full_test_completed", test_id=test_id, summary=summary)
+            result_path = Path(self.user_data_dir) / TEST_RESULT_RELATIVE_PATH
+            try:
+                result_path.write_text(
+                    json.dumps(
+                        {
+                            "test_id": test_id,
+                            "completed": True,
+                            "summary": summary,
+                            "timestamp_ms": int(time.time() * 1000),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                self._append_report(
+                    "full_test_result_write_failed",
+                    test_id=test_id,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+
+            def finish(_dt: float) -> None:
+                self._copy_to_clipboard(self._read_report_text())
+                self.status.text = summary
+            Clock.schedule_once(finish, 0)
+
+        Thread(target=worker, name="yj64-full-function-test", daemon=True).start()
+
+    def _read_report_text(self) -> str:
+        try:
+            return self.report_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return f"YJ-64 REPORT READ FAILED: {type(exc).__name__}: {exc}"
 
     def _launched_by_internal_agent(self) -> bool:
         try:
