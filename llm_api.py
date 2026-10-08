@@ -13,6 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 CONFIG_RELATIVE_PATH = Path("yj64-llm-config.json")
+KEY_BUNDLE_RELATIVE_PATH = Path("yj64-llm-keys.json")
 
 
 def _request(
@@ -65,6 +66,41 @@ def _participant_config_path(
     return Path(user_data_dir) / f"yj64-llm-config-{slug}.json"
 
 
+def _load_key_bundle(user_data_dir: str | Path) -> dict[str, Any]:
+    path = Path(user_data_dir) / KEY_BUNDLE_RELATIVE_PATH
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _bundle_provider_config(
+    bundle: dict[str, Any],
+    provider: str = "",
+) -> dict[str, str]:
+    providers = bundle.get("providers", {})
+    if not isinstance(providers, dict):
+        providers = {}
+    provider_id = provider.strip().lower()
+    selected = providers.get(provider_id, {})
+    if not isinstance(selected, dict):
+        selected = {}
+    if not provider_id:
+        provider_id = str(bundle.get("default_provider") or "").strip().lower()
+        selected = providers.get(provider_id, {})
+        if not isinstance(selected, dict):
+            selected = {}
+    return {
+        "provider": provider_id,
+        "model": str(selected.get("model") or ""),
+        "api_key": str(selected.get("api_key") or ""),
+        "endpoint": str(selected.get("endpoint") or ""),
+    }
+
+
 def load_config(
     user_data_dir: str | Path,
     participant_name: str = "Owner",
@@ -79,11 +115,24 @@ def load_config(
         except (OSError, ValueError):
             pass
 
+    bundle = _load_key_bundle(user_data_dir)
+    bundle_config = _bundle_provider_config(
+        bundle,
+        str(config.get("provider") or bundle.get("default_provider") or ""),
+    )
+    provider = str(
+        config.get("provider")
+        or bundle_config.get("provider")
+        or os.getenv("YJ64_LLM_PROVIDER", "openai")
+    )
+    if provider != bundle_config.get("provider"):
+        bundle_config = _bundle_provider_config(bundle, provider)
+
     return {
-        "provider": config.get("provider") or os.getenv("YJ64_LLM_PROVIDER", "openai"),
-        "model": config.get("model") or os.getenv("YJ64_LLM_MODEL", ""),
-        "api_key": config.get("api_key") or os.getenv("YJ64_LLM_API_KEY", ""),
-        "endpoint": config.get("endpoint") or os.getenv("YJ64_LLM_ENDPOINT", ""),
+        "provider": provider,
+        "model": config.get("model") or bundle_config.get("model") or os.getenv("YJ64_LLM_MODEL", ""),
+        "api_key": config.get("api_key") or bundle_config.get("api_key") or os.getenv("YJ64_LLM_API_KEY", ""),
+        "endpoint": config.get("endpoint") or bundle_config.get("endpoint") or os.getenv("YJ64_LLM_ENDPOINT", ""),
         "mode": config.get("mode") or "llm",
     }
 
@@ -92,10 +141,14 @@ def participant_config_exists(
     user_data_dir: str | Path,
     participant_name: str,
 ) -> bool:
-    return _participant_config_path(
+    path = _participant_config_path(
         user_data_dir,
         participant_name=participant_name,
-    ).is_file()
+    )
+    if path.is_file():
+        return True
+    config = load_config(user_data_dir, participant_name=participant_name)
+    return bool(config.get("api_key") and config.get("model"))
 
 
 def save_config(
