@@ -1,6 +1,8 @@
 package org.blackmirror.blackmirror;
 
 import android.app.Activity;
+import android.content.Intent;
+import android.net.Uri;
 import android.app.ActivityManager;
 import android.app.ApplicationExitInfo;
 import android.content.ClipData;
@@ -22,6 +24,7 @@ public class MonitorActivity extends Activity {
     private static final String REPORT = "yj64-reports/yj64-report.jsonl";
     private static final String PID_FILE = "yj64-main-process.pid";
     private TextView status;
+    private static final int PICK_CONFIG_FILE = 4101;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -40,6 +43,11 @@ public class MonitorActivity extends Activity {
         status.setText(identityText());
         status.setTextIsSelectable(true);
         root.addView(status, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        Button config = new Button(this);
+        config.setText("Import LLM config file");
+        config.setOnClickListener(v -> pickConfigFile());
+        root.addView(config);
 
         Button refresh = new Button(this);
         refresh.setText("Refresh monitor status");
@@ -121,6 +129,41 @@ public class MonitorActivity extends Activity {
         ClipboardManager clipboard =
             (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         clipboard.setPrimaryClip(ClipData.newPlainText("YJ-64", text));
+    }
+
+    private void pickConfigFile() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(intent, PICK_CONFIG_FILE);
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != PICK_CONFIG_FILE || resultCode != RESULT_OK
+                || data == null || data.getData() == null) return;
+        Uri uri = data.getData();
+        try {
+            File target = new File(getFilesDir(), "yj64-llm-config.json");
+            try (InputStream in = getContentResolver().openInputStream(uri);
+                 FileOutputStream out = new FileOutputStream(target, false)) {
+                if (in == null) throw new IOException("Unable to open selected document");
+                byte[] buffer = new byte[8192];
+                int count;
+                while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
+                out.flush();
+                out.getFD().sync();
+            }
+            append("llm_config_file_imported", "{}");
+            status.setText(identityText() + "\n\nLLM config file imported.");
+            Toast.makeText(this, "LLM config imported", Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            append("llm_config_file_import_failed",
+                "{"error_type":"" + escape(e.getClass().getSimpleName()) + ""}");
+            Toast.makeText(this, "Import failed: " + e, Toast.LENGTH_LONG).show();
+        }
     }
 
     private void checkLastCrashAndCopy() {
