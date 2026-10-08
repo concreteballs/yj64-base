@@ -115,87 +115,95 @@ def generate_test_response(
     user_data_dir: str | Path,
     report: Any = None,
 ) -> dict[str, Any]:
+    """Run the fixed Gemini generation smoke test through the current provider path."""
+    prompt = "Reply with exactly: YJ64_OK"
     _report(report, "generation_config_loaded")
-    config = load_config(user_data_dir)
-    provider = config["provider"].strip().lower()
-    model = config["model"].strip()
-    key = config["api_key"].strip()
-    _report(
-        report,
-        "generation_config_checked",
-        provider=provider,
-        model=model,
-        configured=bool(key and model),
+    result = generate_response(
+        user_data_dir,
+        prompt,
+        report=report,
+        participant_name="Owner",
     )
-    if not key:
-        raise RuntimeError("LLM API key is not configured")
-    if not model:
-        raise RuntimeError("LLM model is not configured")
-    if provider not in {"gemini", "google", "google-gemini"}:
-        raise RuntimeError(
-            "Generation test currently supports Gemini only"
-        )
+    return result
 
+
+def _extract_interaction_text(data: dict[str, Any]) -> str:
+    """Extract model text from a Gemini Interactions API response."""
+    output_text = data.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+
+    steps = data.get("steps", [])
+    texts: list[str] = []
+    if isinstance(steps, list):
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            step_content = step.get("content", [])
+            if not isinstance(step_content, list):
+                continue
+            for part in step_content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text = part.get("text")
+                    if text is not None:
+                        texts.append(str(text))
+    return "".join(texts).strip()
+
+
+def _generate_gemini_interaction(
+    config: dict[str, str],
+    prompt: str,
+    model: str,
+    key: str,
+    report: Any = None,
+    history: list[dict[str, str]] | None = None,
+) -> str:
     endpoint = (
         config["endpoint"]
         or "https://generativelanguage.googleapis.com/v1beta"
     ).rstrip("/")
-    prompt = "Reply with exactly: YJ64_OK"
-    url = f"{endpoint}/models/{model}:generateContent"
+    url = endpoint + "/interactions"
+
+    input_text = prompt
+    if history:
+        transcript = []
+        for item in history:
+            role = str(item.get("role") or "user")
+            transcript.append(f"{role}: {str(item.get('content') or '')}")
+        transcript.append(f"user: {prompt}")
+        input_text = "\n".join(transcript)
+
     _report(
         report,
         "generation_request_started",
-        provider=provider,
+        provider=config["provider"],
         model=model,
         endpoint=url,
         prompt=prompt,
+        api="interactions",
     )
-    contents = []
-    for item in history or [{"role": "user", "content": prompt}]:
-        role = "model" if item.get("role") == "assistant" else "user"
-        contents.append({
-            "role": role,
-            "parts": [{"text": str(item.get("content", ""))}],
-        })
     data = _request(
         "POST",
         url,
         {"x-goog-api-key": key},
-        payload={"contents": contents},
+        payload={
+            "model": model,
+            "input": input_text,
+        },
     )
-    _report(report, "generation_response_received", provider=provider)
-
-    candidates = data.get("candidates", [])
-    if not isinstance(candidates, list) or not candidates:
-        raise RuntimeError(
-            f"Gemini returned no candidates: {json.dumps(data, ensure_ascii=False)[:1200]}"
-        )
-    content = candidates[0].get("content", {})
-    parts = content.get("parts", []) if isinstance(content, dict) else []
-    texts = [
-        str(part["text"])
-        for part in parts
-        if isinstance(part, dict) and part.get("text") is not None
-    ]
-    response_text = "".join(texts).strip()
-    if not response_text:
-        raise RuntimeError(
-            f"Gemini returned no text: {json.dumps(data, ensure_ascii=False)[:1200]}"
-        )
-
     _report(
         report,
-        "generation_test_completed",
-        provider=provider,
-        model=model,
-        response=response_text,
+        "generation_response_received",
+        provider=config["provider"],
+        api="interactions",
     )
-    return {
-        "provider": config["provider"],
-        "model": model,
-        "prompt": prompt,
-        "response": response_text,
-    }
+    response_text = _extract_interaction_text(data)
+    if not response_text:
+        raise RuntimeError(
+            "Gemini Interactions API returned no text: "
+            f"{json.dumps(data, ensure_ascii=False)[:1200]}"
+        )
+    return response_text
 
 
 def generate_response(
@@ -349,50 +357,14 @@ def generate_response(
             "response": response_text,
         }
 
-    endpoint = (
-        config["endpoint"]
-        or "https://generativelanguage.googleapis.com/v1beta"
-    ).rstrip("/")
-    url = f"{endpoint}/models/{model}:generateContent"
-    _report(
-        report,
-        "generation_request_started",
-        provider=provider,
-        model=model,
-        endpoint=url,
-        prompt=prompt,
+    response_text = _generate_gemini_interaction(
+        config,
+        prompt,
+        model,
+        key,
+        report=report,
+        history=history,
     )
-    data = _request(
-        "POST",
-        url,
-        {"x-goog-api-key": key},
-        payload={
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt},
-                    ],
-                },
-            ],
-        },
-    )
-    _report(report, "generation_response_received", provider=provider)
-    candidates = data.get("candidates", [])
-    if not isinstance(candidates, list) or not candidates:
-        raise RuntimeError(
-            f"Gemini returned no candidates: {json.dumps(data, ensure_ascii=False)[:1200]}"
-        )
-    content = candidates[0].get("content", {})
-    parts = content.get("parts", []) if isinstance(content, dict) else []
-    response_text = "".join(
-        str(part["text"])
-        for part in parts
-        if isinstance(part, dict) and part.get("text") is not None
-    ).strip()
-    if not response_text:
-        raise RuntimeError(
-            f"Gemini returned no text: {json.dumps(data, ensure_ascii=False)[:1200]}"
-        )
     _report(
         report,
         "generation_completed",
@@ -406,7 +378,6 @@ def generate_response(
         "prompt": prompt,
         "response": response_text,
     }
-
 
 def _report(report: Any, event: str, **data: Any) -> None:
     if report is not None:
@@ -431,9 +402,6 @@ def fetch_models(
         result = []
         for item in models:
             if not isinstance(item, dict) or not item.get("name"):
-                continue
-            methods = item.get("supportedGenerationMethods", [])
-            if methods and "generateContent" not in methods:
                 continue
             name = str(item["name"])
             result.append(name[7:] if name.startswith("models/") else name)
