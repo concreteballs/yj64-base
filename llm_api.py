@@ -116,6 +116,10 @@ def load_config(
             pass
 
     bundle = _load_key_bundle(user_data_dir)
+    if not bundle:
+        if "providers" in config or "default_provider" in config:
+            bundle = config
+            config = {}
     bundle_config = _bundle_provider_config(
         bundle,
         str(config.get("provider") or bundle.get("default_provider") or ""),
