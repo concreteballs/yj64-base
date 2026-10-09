@@ -30,6 +30,8 @@ TEST_RESULT_RELATIVE_PATH = Path("yj64-test-result.json")
 
 class YJ64BaseApp(App):
     def build(self):
+        from message_distributor import MessageDistributor
+        self.message_distributor = MessageDistributor()
         self.report_path = Path(self.user_data_dir) / REPORT_RELATIVE_PATH
         self.pid_path = Path(self.user_data_dir) / "yj64-main-process.pid"
         self.status = Label(
@@ -157,6 +159,13 @@ class YJ64BaseApp(App):
         )
         dialogue_button.bind(on_release=self._open_group_dialogue)
         participant_column.add_widget(dialogue_button)
+        self.mode_button = Button(
+            text="REQUEST MODE: TEXT",
+            size_hint_y=None,
+            height=54,
+        )
+        self.mode_button.bind(on_release=self._toggle_request_mode)
+        participant_column.add_widget(self.mode_button)
         root.add_widget(participant_column)
         self._refresh_participant_buttons()
 
@@ -173,31 +182,33 @@ class YJ64BaseApp(App):
         Clock.schedule_interval(self._poll_test_command, 0.5)
         return root
 
-    def _participant_config_status(self, participant_name: str) -> dict[str, str | bool]:
-        from llm_api import load_config, participant_config_exists
+    def _toggle_request_mode(self, *_: Any) -> None:
+        mode = self.message_distributor.toggle_mode()
+        self.mode_button.text = f"REQUEST MODE: {mode.upper()}"
+        self._append_report(
+            "message_mode_changed",
+            mode=mode,
+            note=(
+                "Agent mode is a route marker only; the agent API adapter is not implemented yet."
+                if mode == "agent" else "Text mode selected."
+            ),
+        )
+        self.status.text = (
+            "Text mode selected."
+            if mode == "text"
+            else "Practical/agent mode marker selected; its API adapter is not implemented yet."
+        )
 
-        exists = participant_config_exists(
-            self.user_data_dir,
-            participant_name=participant_name,
-        )
-        config = load_config(
-            self.user_data_dir,
-            participant_name=participant_name,
-        ) if exists else {}
-        mode = str(config.get("mode") or "llm").strip().lower()
-        configured = bool(
-            exists
-            and (
-                mode == "device"
-                or (
-                    str(config.get("api_key") or "").strip()
-                    and str(config.get("model") or "").strip()
-                )
-            )
-        )
+    def _participant_config_status(self, participant_name: str) -> dict[str, str | bool]:
+        from llm_api import load_config, route_config_exists
+
+        route_id = self.message_distributor.route_for_participant(participant_name)
+        configured = route_config_exists(self.user_data_dir, route_id)
+        config = load_config(self.user_data_dir, route_id=route_id) if configured else {}
         return {
             "configured": configured,
-            "mode": mode,
+            "mode": self.message_distributor.mode,
+            "route_id": route_id,
             "provider": str(config.get("provider") or ""),
             "model": str(config.get("model") or ""),
         }
@@ -272,13 +283,16 @@ class YJ64BaseApp(App):
             participant=participant_name,
         )
         from llm_settings import LLMSettingsPopup
+        route_id = self.message_distributor.route_for_participant(participant_name)
         LLMSettingsPopup(
             self.user_data_dir,
-            participant_name=participant_name,
-            on_report=lambda event: self._append_report(
-                "participant_" + event,
+            route_id=route_id,
+            on_report=lambda event, **data: self._append_report(
+                "router_" + event,
                 participant=participant_name,
+                **data,
             ),
+            on_copy=self._copy_to_clipboard,
         ).open()
 
     def _open_participant_chat(self, participant_name: str) -> None:
@@ -318,6 +332,10 @@ class YJ64BaseApp(App):
             content=content,
             size_hint=(0.94, 0.72),
         )
+        self.message_distributor.set_private_participant(participant_name)
+        popup.bind(
+            on_dismiss=lambda *_: self.message_distributor.set_private_participant(None)
+        )
 
         def send_message(*_args: Any) -> None:
             message = prompt.text.strip()
@@ -329,24 +347,28 @@ class YJ64BaseApp(App):
             self._append_report(
                 "participant_request_started",
                 participant=participant_name,
+                route_id=status["route_id"],
+                mode=self.message_distributor.mode,
                 prompt=message,
                 provider=status["provider"],
                 model=status["model"],
             )
+            self.chat_output.text += f"\n\nOwner: {message}"
 
             def run_chat() -> None:
                 try:
-                    from llm_api import generate_response
                     self._append_report(
                         "participant_api_request_sent",
                         participant=participant_name,
+                        route_id=status["route_id"],
+                        mode=self.message_distributor.mode,
                         provider=status["provider"],
                         model=status["model"],
                     )
-                    result = generate_response(
+                    result = self.message_distributor.dispatch_message(
                         self.user_data_dir,
+                        participant_name,
                         message,
-                        participant_name=participant_name,
                         report=lambda event, **data: self._append_report(
                             "participant_" + event,
                             participant=participant_name,
@@ -380,6 +402,8 @@ class YJ64BaseApp(App):
                 def finish(*_finish_args: Any) -> None:
                     self._append_report(event[0], **event[1])
                     output.text = text_value
+                    if event[0] == "participant_api_response_received":
+                        self.chat_output.text += f"\n\n{participant_name}:\n{text_value}"
                     send.disabled = False
 
                 Clock.schedule_once(finish, 0)
@@ -410,9 +434,15 @@ class YJ64BaseApp(App):
             self.status.text = "Configure at least two participants first."
             return
 
+        self.message_distributor.reset_queue()
         self._append_report(
             "group_dialogue_opened",
             participants=participants,
+            mode=self.message_distributor.mode,
+            route_ids={
+                name: self.message_distributor.route_for_participant(name)
+                for name in participants
+            },
         )
         content = BoxLayout(orientation="vertical", spacing=8, padding=12)
         output = TextInput(
@@ -478,7 +508,7 @@ class YJ64BaseApp(App):
             )
 
             while not state["stop_requested"]:
-                participant = participants[turn % len(participants)]
+                participant = self.message_distributor.next_participant(participants)
                 status = self._participant_config_status(participant)
                 history: list[dict[str, str]] = []
                 for item in messages:
@@ -499,11 +529,10 @@ class YJ64BaseApp(App):
                     0,
                 )
                 try:
-                    from llm_api import generate_response
-                    result = generate_response(
+                    result = self.message_distributor.dispatch_message(
                         self.user_data_dir,
+                        participant,
                         messages[-1]["text"],
-                        participant_name=participant,
                         history=history,
                         report=lambda event, **data: self._append_report(
                             "group_dialogue_" + event,
@@ -643,10 +672,11 @@ class YJ64BaseApp(App):
             self._append_report("llm_settings_import_succeeded")
             popup = LLMSettingsPopup(
                 self.user_data_dir,
-                on_test=self._test_llm_api,
-                on_report=lambda event: self._append_report(
-                    "llm_settings_" + event
+                route_id="route_owner",
+                on_report=lambda event, **data: self._append_report(
+                    "router_settings_" + event, **data
                 ),
+                on_copy=self._copy_to_clipboard,
             )
             self._append_report("llm_settings_popup_created")
             popup.open()
@@ -673,6 +703,7 @@ class YJ64BaseApp(App):
                 from llm_api import test_llm_api
                 result = test_llm_api(
                     self.user_data_dir,
+                    route_id="route_owner",
                     report=lambda event, **data: self._append_report(
                         "llm_api_" + event, **data
                     ),
@@ -790,17 +821,25 @@ class YJ64BaseApp(App):
 
         def run_chat() -> None:
             try:
-                from llm_api import generate_response
-                result = generate_response(
+                configured_participants = [
+                    name for name in ("Participant 1", "Participant 2", "Participant 3")
+                    if self._participant_config_status(name)["configured"]
+                ]
+                participant = (
+                    self.message_distributor.active_participant
+                    or (configured_participants[0] if configured_participants else "Owner")
+                )
+                result = self.message_distributor.dispatch_message(
                     self.user_data_dir,
+                    participant,
                     prompt,
                     report=lambda event, **data: self._append_report(
                         "llm_chat_" + event, **data
                     ),
                 )
                 report = (
-                    f"User: {prompt}\n"
-                    f"Model: {result['response']}"
+                    f"Owner: {prompt}\n"
+                    f"{participant}: {result['response']}"
                 )
                 event = (
                     "llm_chat_send_succeeded",
@@ -828,7 +867,7 @@ class YJ64BaseApp(App):
 
             def finish(*_args: Any) -> None:
                 self._append_report(event[0], **event[1])
-                self.chat_output.text = report
+                self.chat_output.text += f"\n\n{report}"
                 self.status.text = report
 
             Clock.schedule_once(finish, 0)
