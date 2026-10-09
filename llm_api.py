@@ -1,19 +1,36 @@
-"""YJ-64 LLM API connectivity module.
+"""Central YJ-64 LLM router.
 
-Provider-level connectivity ported from kerosene-rose2 without its UI.
+Provider credentials and model settings live in one app-private router file.
+Participants send a route marker and mode; provider-specific HTTP details stay here.
 """
 from __future__ import annotations
 
 import json
-import os
 import ssl
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-CONFIG_RELATIVE_PATH = Path("yj64-llm-config.json")
-KEY_BUNDLE_RELATIVE_PATH = Path("yj64-llm-keys.json")
+ROUTER_CONFIG_RELATIVE_PATH = Path("yj64-router-config.json")
+LEGACY_CONFIG_RELATIVE_PATH = Path("yj64-llm-config.json")
+LEGACY_BUNDLE_RELATIVE_PATH = Path("yj64-llm-keys.json")
+LEGACY_PARTICIPANTS = (
+    ("Owner", "route_owner"),
+    ("Participant 1", "route_1"),
+    ("Participant 2", "route_2"),
+    ("Participant 3", "route_3"),
+)
+PROVIDER_DEFAULTS = {
+    "openai": "https://api.openai.com/v1",
+    "openai-responses": "https://api.openai.com/v1",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta",
+    "google": "https://generativelanguage.googleapis.com/v1beta",
+    "google-gemini": "https://generativelanguage.googleapis.com/v1beta",
+    "groq": "https://api.groq.com/openai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+}
 
 
 def _request(
@@ -36,16 +53,15 @@ def _request(
             body = json.dumps(payload).encode("utf-8")
             request_headers["Content-Type"] = "application/json"
         with urlopen(
-            Request(
-                url,
-                headers=request_headers,
-                method=method,
-                data=body,
-            ),
+            Request(url, headers=request_headers, method=method, data=body),
             timeout=timeout,
             context=context,
         ) as response:
-            return json.loads(response.read().decode("utf-8"))
+            raw = response.read().decode("utf-8")
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                raise RuntimeError("API returned JSON that is not an object")
+            return parsed
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"HTTP {exc.code}: {detail[:800]}") from exc
@@ -55,19 +71,27 @@ def _request(
         raise RuntimeError("API returned invalid JSON") from exc
 
 
+def _route_id(route_id: str | None = None, participant_name: str = "Owner") -> str:
+    if route_id:
+        value = route_id.strip().lower()
+        if value.startswith("route_"):
+            return value
+        raise ValueError(f"Invalid route marker: {route_id}")
+    # Compatibility for existing callers while all chat dispatch moves to
+    # message_distributor.py. Provider/API details are not inferred here.
+    name = participant_name.strip().lower()
+    legacy_map = {
+        "owner": "route_owner",
+        "participant 1": "route_1",
+        "participant 2": "route_2",
+        "participant 3": "route_3",
+    }
+    if name not in legacy_map:
+        raise ValueError(f"No router route is registered for {participant_name}")
+    return legacy_map[name]
 
-def _participant_config_path(
-    user_data_dir: str | Path,
-    participant_name: str = "Owner",
-) -> Path:
-    if participant_name.strip().lower() == "owner":
-        return Path(user_data_dir) / CONFIG_RELATIVE_PATH
-    slug = participant_name.strip().lower().replace(" ", "-")
-    return Path(user_data_dir) / f"yj64-llm-config-{slug}.json"
 
-
-def _load_key_bundle(user_data_dir: str | Path) -> dict[str, Any]:
-    path = Path(user_data_dir) / KEY_BUNDLE_RELATIVE_PATH
+def _read_json_dict(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     try:
@@ -77,190 +101,249 @@ def _load_key_bundle(user_data_dir: str | Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def _bundle_provider_config(
-    bundle: dict[str, Any],
-    provider: str = "",
-) -> dict[str, str]:
+def _write_router_data(user_data_dir: str | Path, data: dict[str, Any]) -> None:
+    path = Path(user_data_dir) / ROUTER_CONFIG_RELATIVE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_router_data(user_data_dir: str | Path) -> dict[str, Any]:
+    root = Path(user_data_dir)
+    path = root / ROUTER_CONFIG_RELATIVE_PATH
+    if path.is_file():
+        data = _read_json_dict(path)
+        routes = data.get("routes", {})
+        return {"routes": routes if isinstance(routes, dict) else {}}
+
+    # One-time migration from the old per-participant files into router cells.
+    routes: dict[str, dict[str, str]] = {}
+    migrated_paths: list[Path] = []
+    for participant, route_id in LEGACY_PARTICIPANTS:
+        legacy_path = (
+            root / LEGACY_CONFIG_RELATIVE_PATH
+            if participant == "Owner"
+            else root / f"yj64-llm-config-{participant.lower().replace(' ', '-')}.json"
+        )
+        legacy = _read_json_dict(legacy_path)
+        if legacy.get("api_key") and legacy.get("model"):
+            routes[route_id] = {
+                "provider": str(legacy.get("provider") or "openai"),
+                "model": str(legacy.get("model") or ""),
+                "api_key": str(legacy.get("api_key") or ""),
+                "endpoint": str(legacy.get("endpoint") or ""),
+            }
+            migrated_paths.append(legacy_path)
+
+    bundle_path = root / LEGACY_BUNDLE_RELATIVE_PATH
+    bundle = _read_json_dict(bundle_path)
     providers = bundle.get("providers", {})
-    if not isinstance(providers, dict):
-        providers = {}
-    provider_id = provider.strip().lower()
-    selected = providers.get(provider_id, {})
-    if not isinstance(selected, dict):
-        selected = {}
-    if not provider_id:
-        provider_id = str(bundle.get("default_provider") or "").strip().lower()
-        selected = providers.get(provider_id, {})
-        if not isinstance(selected, dict):
-            selected = {}
-    return {
-        "provider": provider_id,
-        "model": str(selected.get("model") or ""),
-        "api_key": str(selected.get("api_key") or ""),
-        "endpoint": str(selected.get("endpoint") or ""),
-    }
+    if isinstance(providers, dict):
+        next_index = 1
+        for provider_name, raw in providers.items():
+            if not isinstance(raw, dict) or not raw.get("api_key") or not raw.get("model"):
+                continue
+            while f"route_{next_index}" in routes:
+                next_index += 1
+            routes[f"route_{next_index}"] = {
+                "provider": str(provider_name),
+                "model": str(raw.get("model") or ""),
+                "api_key": str(raw.get("api_key") or ""),
+                "endpoint": str(raw.get("endpoint") or ""),
+            }
+            next_index += 1
+        if routes:
+            migrated_paths.append(bundle_path)
+
+    data = {"routes": routes}
+    if routes:
+        _write_router_data(root, data)
+        # Remove migrated duplicate credential files only after the central
+        # router file has been written successfully.
+        for legacy_path in migrated_paths:
+            try:
+                legacy_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return data
+
+
+def list_routes(user_data_dir: str | Path) -> list[dict[str, str]]:
+    routes = _load_router_data(user_data_dir).get("routes", {})
+    if not isinstance(routes, dict):
+        return []
+    result: list[dict[str, str]] = []
+    for route_id, raw in routes.items():
+        if not isinstance(raw, dict):
+            continue
+        config = {str(k): str(v) for k, v in raw.items()}
+        if config.get("api_key") and config.get("model"):
+            result.append({
+                "route_id": str(route_id),
+                "provider": config.get("provider", ""),
+                "model": config.get("model", ""),
+                "endpoint": config.get("endpoint", ""),
+            })
+    return sorted(result, key=lambda item: item["route_id"])
 
 
 def load_config(
     user_data_dir: str | Path,
     participant_name: str = "Owner",
+    route_id: str | None = None,
 ) -> dict[str, str]:
-    path = _participant_config_path(user_data_dir, participant_name)
-    config: dict[str, str] = {}
-    if path.exists():
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                config = {str(k): str(v) for k, v in raw.items()}
-        except (OSError, ValueError):
-            pass
-
-    bundle = _load_key_bundle(user_data_dir)
-    if not bundle:
-        if "providers" in config or "default_provider" in config:
-            bundle = config
-            config = {}
-    bundle_config = _bundle_provider_config(
-        bundle,
-        str(config.get("provider") or bundle.get("default_provider") or ""),
-    )
-    provider = str(
-        config.get("provider")
-        or bundle_config.get("provider")
-        or os.getenv("YJ64_LLM_PROVIDER", "openai")
-    )
-    if provider != bundle_config.get("provider"):
-        bundle_config = _bundle_provider_config(bundle, provider)
-
+    selected_route = _route_id(route_id, participant_name)
+    routes = _load_router_data(user_data_dir).get("routes", {})
+    raw = routes.get(selected_route, {}) if isinstance(routes, dict) else {}
+    if not isinstance(raw, dict):
+        raw = {}
     return {
-        "provider": provider,
-        "model": config.get("model") or bundle_config.get("model") or os.getenv("YJ64_LLM_MODEL", ""),
-        "api_key": config.get("api_key") or bundle_config.get("api_key") or os.getenv("YJ64_LLM_API_KEY", ""),
-        "endpoint": config.get("endpoint") or bundle_config.get("endpoint") or os.getenv("YJ64_LLM_ENDPOINT", ""),
-        "mode": config.get("mode") or "llm",
+        "route_id": selected_route,
+        "provider": str(raw.get("provider") or ""),
+        "model": str(raw.get("model") or ""),
+        "api_key": str(raw.get("api_key") or ""),
+        "endpoint": str(raw.get("endpoint") or ""),
     }
+
+
+def route_config_exists(
+    user_data_dir: str | Path,
+    route_id: str,
+) -> bool:
+    config = load_config(user_data_dir, route_id=route_id)
+    return bool(config.get("api_key") and config.get("model") and config.get("provider"))
 
 
 def participant_config_exists(
     user_data_dir: str | Path,
     participant_name: str,
 ) -> bool:
-    path = _participant_config_path(
-        user_data_dir,
-        participant_name=participant_name,
-    )
-    if path.is_file():
-        return True
-    config = load_config(user_data_dir, participant_name=participant_name)
-    return bool(config.get("api_key") and config.get("model"))
+    return route_config_exists(user_data_dir, _route_id(participant_name=participant_name))
 
 
 def save_config(
     user_data_dir: str | Path,
     config: dict[str, str],
     participant_name: str = "Owner",
+    route_id: str | None = None,
 ) -> None:
-    path = _participant_config_path(user_data_dir, participant_name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(config, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    selected_route = _route_id(route_id, participant_name)
+    data = _load_router_data(user_data_dir)
+    routes = data.setdefault("routes", {})
+    routes[selected_route] = {
+        "provider": str(config.get("provider") or "").strip().lower(),
+        "model": str(config.get("model") or "").strip(),
+        "api_key": str(config.get("api_key") or "").strip(),
+        "endpoint": str(config.get("endpoint") or "").strip(),
+    }
+    _write_router_data(user_data_dir, data)
 
 
-def generate_test_response(
-    user_data_dir: str | Path,
-    report: Any = None,
-) -> dict[str, Any]:
-    """Run the fixed Gemini generation smoke test through the current provider path."""
-    prompt = "Reply with exactly: YJ64_OK"
-    _report(report, "generation_config_loaded")
-    result = generate_response(
-        user_data_dir,
-        prompt,
-        report=report,
-        participant_name="Owner",
-    )
-    return result
+def _report(report: Any, event: str, **data: Any) -> None:
+    if report is not None:
+        report(event, **data)
 
 
-def _extract_interaction_text(data: dict[str, Any]) -> str:
-    """Extract model text from a Gemini Interactions API response."""
-    output_text = data.get("output_text")
-    if isinstance(output_text, str) and output_text.strip():
-        return output_text.strip()
+def fetch_models(
+    provider: str,
+    api_key: str,
+    endpoint: str = "",
+) -> list[str]:
+    provider_id = provider.strip().lower()
+    key = api_key.strip()
+    if not key:
+        raise RuntimeError("LLM API key is not configured")
+    base = (endpoint or PROVIDER_DEFAULTS.get(provider_id, "")).rstrip("/")
+    if not base:
+        raise RuntimeError("Custom provider requires an API endpoint")
+    if provider_id in {"gemini", "google", "google-gemini"}:
+        data = _request("GET", base + "/models", {"x-goog-api-key": key})
+        models = data.get("models", [])
+        result = []
+        for item in models if isinstance(models, list) else []:
+            if isinstance(item, dict) and item.get("name"):
+                name = str(item["name"])
+                result.append(name[7:] if name.startswith("models/") else name)
+        return sorted(set(result), key=str.casefold)
 
-    steps = data.get("steps", [])
+    for suffix in ("/chat/completions", "/responses", "/models"):
+        if base.endswith(suffix):
+            base = base[:-len(suffix)]
+            break
+    headers = {"Authorization": f"Bearer {key}"}
+    if provider_id == "openrouter":
+        headers.update({
+            "HTTP-Referer": "https://github.com/concreteballs/yj64-base",
+            "X-Title": "YJ-64",
+        })
+    data = _request("GET", base + "/models", headers)
+    models = data.get("data", [])
+    ids = [
+        str(item["id"])
+        for item in models if isinstance(models, list)
+        if isinstance(item, dict) and item.get("id")
+    ]
+    return sorted(set(ids), key=str.casefold)
+
+
+def _gemini_contents(
+    prompt: str,
+    history: list[dict[str, str]] | None,
+) -> list[dict[str, Any]]:
+    contents: list[dict[str, Any]] = []
+    for item in history or []:
+        role = str(item.get("role") or "user").strip().lower()
+        content = str(item.get("content") or "")
+        if not content:
+            continue
+        contents.append({
+            "role": "model" if role in {"assistant", "model"} else "user",
+            "parts": [{"text": content}],
+        })
+    if not contents or str((history or [{}])[-1].get("content") or "") != prompt:
+        contents.append({"role": "user", "parts": [{"text": prompt}]})
+    return contents
+
+
+def _extract_gemini_text(data: dict[str, Any]) -> str:
+    candidates = data.get("candidates", [])
+    if not isinstance(candidates, list):
+        return ""
     texts: list[str] = []
-    if isinstance(steps, list):
-        for step in steps:
-            if not isinstance(step, dict):
-                continue
-            step_content = step.get("content", [])
-            if not isinstance(step_content, list):
-                continue
-            for part in step_content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    text = part.get("text")
-                    if text is not None:
-                        texts.append(str(text))
+    for candidate in candidates[:1]:
+        if not isinstance(candidate, dict):
+            continue
+        content = candidate.get("content", {})
+        parts = content.get("parts", []) if isinstance(content, dict) else []
+        if isinstance(parts, list):
+            for part in parts:
+                if isinstance(part, dict) and part.get("text") is not None:
+                    texts.append(str(part["text"]))
     return "".join(texts).strip()
 
 
-def _generate_gemini_interaction(
-    config: dict[str, str],
-    prompt: str,
-    model: str,
-    key: str,
-    report: Any = None,
-    history: list[dict[str, str]] | None = None,
-) -> str:
-    endpoint = (
-        config["endpoint"]
-        or "https://generativelanguage.googleapis.com/v1beta"
-    ).rstrip("/")
-    url = endpoint + "/interactions"
-
-    input_text = prompt
-    if history:
-        transcript = []
-        for item in history:
-            role = str(item.get("role") or "user")
-            transcript.append(f"{role}: {str(item.get('content') or '')}")
-        transcript.append(f"user: {prompt}")
-        input_text = "\n".join(transcript)
-
-    _report(
-        report,
-        "generation_request_started",
-        provider=config["provider"],
-        model=model,
-        endpoint=url,
-        prompt=prompt,
-        api="interactions",
-    )
-    data = _request(
-        "POST",
-        url,
-        {"x-goog-api-key": key},
-        payload={
-            "model": model,
-            "input": input_text,
-        },
-    )
-    _report(
-        report,
-        "generation_response_received",
-        provider=config["provider"],
-        api="interactions",
-    )
-    response_text = _extract_interaction_text(data)
-    if not response_text:
-        raise RuntimeError(
-            "Gemini Interactions API returned no text: "
-            f"{json.dumps(data, ensure_ascii=False)[:1200]}"
-        )
-    return response_text
+def _extract_openai_text(data: dict[str, Any]) -> str:
+    output_text = data.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+    output = data.get("output", [])
+    texts: list[str] = []
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content", [])
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("text") is not None:
+                        texts.append(str(part["text"]))
+    if texts:
+        return "".join(texts).strip()
+    choices = data.get("choices", [])
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        message = choices[0].get("message", {})
+        if isinstance(message, dict):
+            return str(message.get("content") or "").strip()
+    return ""
 
 
 def generate_response(
@@ -269,28 +352,53 @@ def generate_response(
     report: Any = None,
     participant_name: str = "Owner",
     history: list[dict[str, str]] | None = None,
+    route_id: str | None = None,
+    mode: str = "text",
+    operation_id: str | None = None,
 ) -> dict[str, Any]:
-    _report(report, "generation_config_loaded")
-    config = load_config(user_data_dir, participant_name=participant_name)
+    """Single gateway entry point; mode and route are markers, not API details."""
+    operation = operation_id or uuid.uuid4().hex
+    selected_route = _route_id(route_id, participant_name)
+    selected_mode = str(mode or "text").strip().lower()
+    _report(
+        report, "gateway_request_received",
+        operation_id=operation, route_id=selected_route, mode=selected_mode,
+        prompt=prompt,
+    )
+    if selected_mode != "text":
+        _report(
+            report, "gateway_mode_rejected",
+            operation_id=operation, route_id=selected_route, mode=selected_mode,
+            reason="Only text mode is implemented in this build",
+        )
+        raise RuntimeError(f"Request mode '{selected_mode}' is not implemented yet")
+
+    config = load_config(user_data_dir, route_id=selected_route)
     provider = config["provider"].strip().lower()
     model = config["model"].strip()
     key = config["api_key"].strip()
+    if not provider or not key or not model:
+        _report(
+            report, "gateway_config_missing",
+            operation_id=operation, route_id=selected_route,
+            provider=provider, model=model,
+            configured=bool(provider and key and model),
+        )
+        raise RuntimeError(f"Router cell {selected_route} is not fully configured")
     _report(
-        report,
-        "generation_config_checked",
-        provider=provider,
-        model=model,
-        configured=bool(key and model),
+        report, "gateway_config_loaded",
+        operation_id=operation, route_id=selected_route,
+        provider=provider, model=model, configured=True,
     )
-    if not key:
-        raise RuntimeError("LLM API key is not configured")
-    if not model:
-        raise RuntimeError("LLM model is not configured")
-    if provider in {"openai", "openai-responses"}:
-        endpoint = (
-            config["endpoint"]
-            or "https://api.openai.com/v1/responses"
-        ).rstrip("/")
+
+    if provider in {"gemini", "google", "google-gemini"}:
+        base = (config["endpoint"] or PROVIDER_DEFAULTS["gemini"]).rstrip("/")
+        url = f"{base}/models/{model}:generateContent"
+        payload = {"contents": _gemini_contents(prompt, history)}
+        headers = {"x-goog-api-key": key}
+        api_method = "generateContent"
+    elif provider in {"openai", "openai-responses"}:
+        endpoint = (config["endpoint"] or "https://api.openai.com/v1/responses").rstrip("/")
         if endpoint.endswith("/chat/completions"):
             url = endpoint
             payload = {
@@ -303,233 +411,173 @@ def generate_response(
                 "model": model,
                 "input": history or [{"role": "user", "content": prompt}],
             }
-        _report(
-            report,
-            "generation_request_started",
-            provider=provider,
-            model=model,
-            endpoint=url,
-            prompt=prompt,
-        )
-        data = _request(
-            "POST",
-            url,
-            {"Authorization": f"Bearer {key}"},
-            payload=payload,
-        )
-        _report(report, "generation_response_received", provider=provider)
-        response_text = str(data.get("output_text") or "").strip()
-        if not response_text:
-            output = data.get("output", [])
-            texts: list[str] = []
-            if isinstance(output, list):
-                for item in output:
-                    if not isinstance(item, dict):
-                        continue
-                    content = item.get("content", [])
-                    if not isinstance(content, list):
-                        continue
-                    for part in content:
-                        if isinstance(part, dict) and part.get("text") is not None:
-                            texts.append(str(part["text"]))
-            response_text = "".join(texts).strip()
-        if not response_text:
-            choices = data.get("choices", [])
-            if isinstance(choices, list) and choices:
-                message = choices[0].get("message", {})
-                if isinstance(message, dict):
-                    response_text = str(message.get("content") or "").strip()
-        if not response_text:
-            raise RuntimeError(
-                f"OpenAI returned no text: {json.dumps(data, ensure_ascii=False)[:1200]}"
-            )
-        _report(
-            report,
-            "generation_completed",
-            provider=provider,
-            model=model,
-            response=response_text,
-        )
-        return {
-            "provider": config["provider"],
-            "model": model,
-            "prompt": prompt,
-            "response": response_text,
-        }
-
-    if provider in {"groq", "openrouter"} or provider not in {
-        "gemini", "google", "google-gemini", "openai", "openai-responses"
-    }:
-        defaults = {
-            "groq": "https://api.groq.com/openai/v1",
-            "openrouter": "https://openrouter.ai/api/v1",
-        }
-        base = (config["endpoint"] or defaults.get(provider, "")).rstrip("/")
+        headers = {"Authorization": f"Bearer {key}"}
+        api_method = "responses" if url.endswith("/responses") else "chat_completions"
+    else:
+        base = (config["endpoint"] or PROVIDER_DEFAULTS.get(provider, "")).rstrip("/")
         if not base:
-            raise RuntimeError(
-                "Custom provider requires an API endpoint compatible with Chat Completions"
-            )
+            raise RuntimeError(f"Router cell {selected_route} requires an API endpoint")
         url = base if base.endswith("/chat/completions") else base + "/chat/completions"
         payload = {
             "model": model,
             "messages": history or [{"role": "user", "content": prompt}],
         }
-        _report(
-            report,
-            "generation_request_started",
-            provider=provider,
-            model=model,
-            endpoint=url,
-            prompt=prompt,
-        )
         headers = {"Authorization": f"Bearer {key}"}
         if provider == "openrouter":
             headers.update({
                 "HTTP-Referer": "https://github.com/concreteballs/yj64-base",
                 "X-Title": "YJ-64",
             })
-        data = _request("POST", url, headers, payload=payload)
-        _report(report, "generation_response_received", provider=provider)
-        choices = data.get("choices", [])
-        response_text = ""
-        if isinstance(choices, list) and choices:
-            message = choices[0].get("message", {})
-            if isinstance(message, dict):
-                response_text = str(message.get("content") or "").strip()
-        if not response_text:
-            raise RuntimeError(
-                f"{provider} returned no text: {json.dumps(data, ensure_ascii=False)[:1200]}"
-            )
-        _report(
-            report,
-            "generation_completed",
-            provider=provider,
-            model=model,
-            response=response_text,
-        )
-        return {
-            "provider": config["provider"],
-            "model": model,
-            "prompt": prompt,
-            "response": response_text,
-        }
+        api_method = "chat_completions"
 
-    response_text = _generate_gemini_interaction(
-        config,
-        prompt,
-        model,
-        key,
-        report=report,
-        history=history,
+    _report(
+        report, "gateway_request_prepared",
+        operation_id=operation, route_id=selected_route,
+        provider=provider, model=model, api_method=api_method,
+        http_method="POST", endpoint=url, prompt=prompt,
+        history_count=len(history or []),
     )
     _report(
-        report,
-        "generation_completed",
-        provider=provider,
-        model=model,
-        response=response_text,
+        report, "gateway_request_sending",
+        operation_id=operation, route_id=selected_route,
+        provider=provider, model=model, api_method=api_method,
+    )
+    data = _request("POST", url, headers, payload=payload)
+    _report(
+        report, "gateway_http_response_received",
+        operation_id=operation, route_id=selected_route,
+        provider=provider, model=model, api_method=api_method,
+    )
+
+    response_text = (
+        _extract_gemini_text(data)
+        if provider in {"gemini", "google", "google-gemini"}
+        else _extract_openai_text(data)
+    )
+    if not response_text:
+        _report(
+            report, "gateway_response_text_missing",
+            operation_id=operation, route_id=selected_route,
+            provider=provider, model=model,
+            response_shape=list(data.keys()),
+        )
+        raise RuntimeError(
+            f"{provider} returned an HTTP response without extractable text: "
+            f"{json.dumps(data, ensure_ascii=False)[:1000]}"
+        )
+    _report(
+        report, "gateway_response_ready",
+        operation_id=operation, route_id=selected_route,
+        provider=provider, model=model,
+        response_length=len(response_text),
     )
     return {
+        "route_id": selected_route,
         "provider": config["provider"],
         "model": model,
         "prompt": prompt,
         "response": response_text,
+        "operation_id": operation,
     }
 
-def _report(report: Any, event: str, **data: Any) -> None:
-    if report is not None:
-        report(event, **data)
 
-
-def fetch_models(
-    provider: str,
-    api_key: str,
-    endpoint: str = "",
-) -> list[str]:
-    """Return model IDs visible to this API key without saving the key."""
-    provider_id = provider.strip().lower()
-    key = api_key.strip()
-    if not key:
-        raise RuntimeError("LLM API key is not configured")
-
-    if provider_id in {"gemini", "google", "google-gemini"}:
-        base = (endpoint or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
-        data = _request("GET", base + "/models", {"x-goog-api-key": key})
-        models = data.get("models", []) if isinstance(data, dict) else []
-        result = []
-        for item in models:
-            if not isinstance(item, dict) or not item.get("name"):
-                continue
-            name = str(item["name"])
-            result.append(name[7:] if name.startswith("models/") else name)
-        return sorted(set(result), key=str.casefold)
-
-    defaults = {
-        "openai": "https://api.openai.com/v1",
-        "openai-responses": "https://api.openai.com/v1",
-        "groq": "https://api.groq.com/openai/v1",
-        "openrouter": "https://openrouter.ai/api/v1",
-    }
-    base = (endpoint or defaults.get(provider_id, "")).rstrip("/")
-    if not base:
-        raise RuntimeError("Custom provider requires an API endpoint")
-    for suffix in ("/chat/completions", "/responses"):
-        if base.endswith(suffix):
-            base = base[:-len(suffix)]
-            break
-    models_url = base + "/models"
-    headers = {"Authorization": f"Bearer {key}"}
-    if provider_id == "openrouter":
-        headers.update({
-            "HTTP-Referer": "https://github.com/concreteballs/yj64-base",
-            "X-Title": "YJ-64",
-        })
-    data = _request("GET", models_url, headers)
-    models = data.get("data", []) if isinstance(data, dict) else []
-    ids = [
-        str(item["id"])
-        for item in models
-        if isinstance(item, dict) and item.get("id")
-    ]
-    return sorted(set(ids), key=str.casefold)
+def generate_test_response(
+    user_data_dir: str | Path,
+    report: Any = None,
+    route_id: str = "route_owner",
+) -> dict[str, Any]:
+    prompt = "Reply with exactly: YJ64_OK"
+    return generate_response(
+        user_data_dir, prompt, report=report, route_id=route_id, mode="text"
+    )
 
 
 def test_llm_api(
     user_data_dir: str | Path,
     report: Any = None,
     participant_name: str = "Owner",
+    route_id: str | None = None,
 ) -> dict[str, Any]:
-    _report(report, "api_config_loaded")
-    config = load_config(user_data_dir, participant_name=participant_name)
+    selected_route = _route_id(route_id, participant_name)
+    config = load_config(user_data_dir, route_id=selected_route)
     provider = config["provider"].strip().lower()
     key = config["api_key"].strip()
-    _report(report, "api_key_check", configured=bool(key))
-    if not key:
-        raise RuntimeError("LLM API key is not configured")
+    model = config["model"].strip()
+    _report(
+        report, "router_connection_test_started",
+        route_id=selected_route, provider=provider, model=model,
+        key_configured=bool(key),
+    )
+    if not key or not model or not provider:
+        raise RuntimeError(f"Router cell {selected_route} is not fully configured")
+    endpoint = config["endpoint"] or PROVIDER_DEFAULTS.get(provider, "")
+    models = fetch_models(provider, key, endpoint)
+    listed = model in models
+    _report(
+        report, "router_connection_test_completed",
+        route_id=selected_route, provider=provider, model=model,
+        model_list_count=len(models), configured_model_listed=listed,
+        available_models=models,
+    )
+    result = (
+        "API reachable; configured model is listed"
+        if listed else
+        f"API reachable; configured model not listed among {len(models)} models"
+    )
+    return {
+        "route_id": selected_route, "provider": config["provider"],
+        "model": model, "result": result, "models": models,
+    }
 
-    if provider in {"openai", "openai-responses", "gemini", "google", "google-gemini", "groq", "openrouter"}:
-        defaults = {
-            "openai": "https://api.openai.com/v1",
-            "openai-responses": "https://api.openai.com/v1",
-            "gemini": "https://generativelanguage.googleapis.com/v1beta",
-            "google": "https://generativelanguage.googleapis.com/v1beta",
-            "google-gemini": "https://generativelanguage.googleapis.com/v1beta",
-            "groq": "https://api.groq.com/openai/v1",
-            "openrouter": "https://openrouter.ai/api/v1",
-        }
-        endpoint = config["endpoint"] or defaults.get(provider, "")
-        _report(report, "api_request_started", provider=provider, endpoint=endpoint)
-        ids = fetch_models(provider, key, endpoint)
-        _report(report, "api_request_succeeded", provider=provider)
-    else:
-        _report(report, "api_request_started", provider=provider, endpoint=config["endpoint"])
-        ids = fetch_models(provider, key, config["endpoint"])
-        _report(report, "api_request_succeeded", provider=provider)
 
-    model = config["model"]
-    if model and model not in ids:
-        result = f"API reachable and key accepted; configured model not listed: {model}"
-    else:
-        result = f"API reachable and key accepted; models visible: {len(ids)}"
-    _report(report, "api_test_completed", provider=config["provider"], model=model, result=result)
-    return {"provider": config["provider"], "model": model, "result": result}
+def test_all_routes(
+    user_data_dir: str | Path,
+    report: Any = None,
+) -> dict[str, Any]:
+    prompt = "Reply with exactly: YJ64_OK"
+    routes = list_routes(user_data_dir)
+    if not routes:
+        raise RuntimeError("No saved router cells are configured")
+    results: list[dict[str, str]] = []
+    report_lines = ["YJ-64 CENTRAL ROUTER — TEST ALL SAVED CONNECTIONS"]
+    for item in routes:
+        route_id = item["route_id"]
+        provider = item["provider"]
+        model = item["model"]
+        _report(
+            report, "router_all_test_route_started",
+            route_id=route_id, provider=provider, model=model,
+            prompt=prompt,
+        )
+        try:
+            result = generate_response(
+                user_data_dir, prompt, report=report,
+                route_id=route_id, mode="text",
+            )
+            status = "PASS"
+            detail = result["response"]
+        except Exception as exc:
+            status = "FAIL"
+            detail = f"{type(exc).__name__}: {exc}"
+            _report(
+                report, "router_all_test_route_failed",
+                route_id=route_id, provider=provider, model=model,
+                error_type=type(exc).__name__, error=str(exc),
+            )
+        else:
+            _report(
+                report, "router_all_test_route_completed",
+                route_id=route_id, provider=provider, model=model,
+                response=result["response"],
+            )
+        results.append({
+            "route_id": route_id, "provider": provider, "model": model,
+            "status": status, "detail": detail,
+        })
+        report_lines.extend([
+            "", f"[{status}] {route_id} — {provider} / {model}",
+            f"Result: {detail}",
+        ])
+    passed = sum(1 for item in results if item["status"] == "PASS")
+    report_lines.extend(["", f"Summary: {passed}/{len(results)} connections passed"])
+    return {"results": results, "report": "\n".join(report_lines)}
