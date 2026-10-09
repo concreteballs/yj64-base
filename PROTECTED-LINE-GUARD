@@ -19,7 +19,7 @@
 ТОЧКА ЗАПУСКА BUILD: Android Build должен запускаться только изменением PROTECTED-LINE-GUARD. Изменения любых других файлов сами по себе не должны автоматически запускать Android Build. Перед сборкой CI обязан проверить точное совпадение каждого разрешённого фрагмента Guard с соответствующим рабочим файлом. При расхождении Build должен завершиться до build-time patching.
 ПЕРЕД КАЖДЫМ РЕДАКТИРОВАНИЕМ: Сначала показать пользователю предлагаемые изменения и получить явное согласование. Не редактировать рабочий файл до согласования.
 ============================================================ НАЧАЛО ОПЕРАЦИОННОГО СТОЛА
-🟡 ИЗМЕНЕНИЕ: BASELINE main.py — отдельные настройки участников.
+🟡 ИЗМЕНЕНИЕ: BASELINE main.py — общий чат и маршрутизация через распределитель.
 FILE: main.py BEGIN ALLOWED
 """YJ-64 minimal base application with an embedded diagnostic agent."""
 
@@ -53,6 +53,8 @@ TEST_RESULT_RELATIVE_PATH = Path("yj64-test-result.json")
 
 class YJ64BaseApp(App):
     def build(self):
+        from message_distributor import MessageDistributor
+        self.message_distributor = MessageDistributor()
         self.report_path = Path(self.user_data_dir) / REPORT_RELATIVE_PATH
         self.pid_path = Path(self.user_data_dir) / "yj64-main-process.pid"
         self.status = Label(
@@ -180,6 +182,13 @@ class YJ64BaseApp(App):
         )
         dialogue_button.bind(on_release=self._open_group_dialogue)
         participant_column.add_widget(dialogue_button)
+        self.mode_button = Button(
+            text="REQUEST MODE: TEXT",
+            size_hint_y=None,
+            height=54,
+        )
+        self.mode_button.bind(on_release=self._toggle_request_mode)
+        participant_column.add_widget(self.mode_button)
         root.add_widget(participant_column)
         self._refresh_participant_buttons()
 
@@ -196,31 +205,33 @@ class YJ64BaseApp(App):
         Clock.schedule_interval(self._poll_test_command, 0.5)
         return root
 
-    def _participant_config_status(self, participant_name: str) -> dict[str, str | bool]:
-        from llm_api import load_config, participant_config_exists
+    def _toggle_request_mode(self, *_: Any) -> None:
+        mode = self.message_distributor.toggle_mode()
+        self.mode_button.text = f"REQUEST MODE: {mode.upper()}"
+        self._append_report(
+            "message_mode_changed",
+            mode=mode,
+            note=(
+                "Agent mode is a route marker only; the agent API adapter is not implemented yet."
+                if mode == "agent" else "Text mode selected."
+            ),
+        )
+        self.status.text = (
+            "Text mode selected."
+            if mode == "text"
+            else "Practical/agent mode marker selected; its API adapter is not implemented yet."
+        )
 
-        exists = participant_config_exists(
-            self.user_data_dir,
-            participant_name=participant_name,
-        )
-        config = load_config(
-            self.user_data_dir,
-            participant_name=participant_name,
-        ) if exists else {}
-        mode = str(config.get("mode") or "llm").strip().lower()
-        configured = bool(
-            exists
-            and (
-                mode == "device"
-                or (
-                    str(config.get("api_key") or "").strip()
-                    and str(config.get("model") or "").strip()
-                )
-            )
-        )
+    def _participant_config_status(self, participant_name: str) -> dict[str, str | bool]:
+        from llm_api import load_config, route_config_exists
+
+        route_id = self.message_distributor.route_for_participant(participant_name)
+        configured = route_config_exists(self.user_data_dir, route_id)
+        config = load_config(self.user_data_dir, route_id=route_id) if configured else {}
         return {
             "configured": configured,
-            "mode": mode,
+            "mode": self.message_distributor.mode,
+            "route_id": route_id,
             "provider": str(config.get("provider") or ""),
             "model": str(config.get("model") or ""),
         }
@@ -295,13 +306,16 @@ class YJ64BaseApp(App):
             participant=participant_name,
         )
         from llm_settings import LLMSettingsPopup
+        route_id = self.message_distributor.route_for_participant(participant_name)
         LLMSettingsPopup(
             self.user_data_dir,
-            participant_name=participant_name,
-            on_report=lambda event: self._append_report(
-                "participant_" + event,
+            route_id=route_id,
+            on_report=lambda event, **data: self._append_report(
+                "router_" + event,
                 participant=participant_name,
+                **data,
             ),
+            on_copy=self._copy_to_clipboard,
         ).open()
 
     def _open_participant_chat(self, participant_name: str) -> None:
@@ -341,6 +355,10 @@ class YJ64BaseApp(App):
             content=content,
             size_hint=(0.94, 0.72),
         )
+        self.message_distributor.set_private_participant(participant_name)
+        popup.bind(
+            on_dismiss=lambda *_: self.message_distributor.set_private_participant(None)
+        )
 
         def send_message(*_args: Any) -> None:
             message = prompt.text.strip()
@@ -352,24 +370,28 @@ class YJ64BaseApp(App):
             self._append_report(
                 "participant_request_started",
                 participant=participant_name,
+                route_id=status["route_id"],
+                mode=self.message_distributor.mode,
                 prompt=message,
                 provider=status["provider"],
                 model=status["model"],
             )
+            self.chat_output.text += f"\n\nOwner: {message}"
 
             def run_chat() -> None:
                 try:
-                    from llm_api import generate_response
                     self._append_report(
                         "participant_api_request_sent",
                         participant=participant_name,
+                        route_id=status["route_id"],
+                        mode=self.message_distributor.mode,
                         provider=status["provider"],
                         model=status["model"],
                     )
-                    result = generate_response(
+                    result = self.message_distributor.dispatch_message(
                         self.user_data_dir,
+                        participant_name,
                         message,
-                        participant_name=participant_name,
                         report=lambda event, **data: self._append_report(
                             "participant_" + event,
                             participant=participant_name,
@@ -403,6 +425,8 @@ class YJ64BaseApp(App):
                 def finish(*_finish_args: Any) -> None:
                     self._append_report(event[0], **event[1])
                     output.text = text_value
+                    if event[0] == "participant_api_response_received":
+                        self.chat_output.text += f"\n\n{participant_name}:\n{text_value}"
                     send.disabled = False
 
                 Clock.schedule_once(finish, 0)
@@ -433,9 +457,15 @@ class YJ64BaseApp(App):
             self.status.text = "Configure at least two participants first."
             return
 
+        self.message_distributor.reset_queue()
         self._append_report(
             "group_dialogue_opened",
             participants=participants,
+            mode=self.message_distributor.mode,
+            route_ids={
+                name: self.message_distributor.route_for_participant(name)
+                for name in participants
+            },
         )
         content = BoxLayout(orientation="vertical", spacing=8, padding=12)
         output = TextInput(
@@ -501,7 +531,7 @@ class YJ64BaseApp(App):
             )
 
             while not state["stop_requested"]:
-                participant = participants[turn % len(participants)]
+                participant = self.message_distributor.next_participant(participants)
                 status = self._participant_config_status(participant)
                 history: list[dict[str, str]] = []
                 for item in messages:
@@ -522,11 +552,10 @@ class YJ64BaseApp(App):
                     0,
                 )
                 try:
-                    from llm_api import generate_response
-                    result = generate_response(
+                    result = self.message_distributor.dispatch_message(
                         self.user_data_dir,
+                        participant,
                         messages[-1]["text"],
-                        participant_name=participant,
                         history=history,
                         report=lambda event, **data: self._append_report(
                             "group_dialogue_" + event,
@@ -666,10 +695,11 @@ class YJ64BaseApp(App):
             self._append_report("llm_settings_import_succeeded")
             popup = LLMSettingsPopup(
                 self.user_data_dir,
-                on_test=self._test_llm_api,
-                on_report=lambda event: self._append_report(
-                    "llm_settings_" + event
+                route_id="route_owner",
+                on_report=lambda event, **data: self._append_report(
+                    "router_settings_" + event, **data
                 ),
+                on_copy=self._copy_to_clipboard,
             )
             self._append_report("llm_settings_popup_created")
             popup.open()
@@ -696,6 +726,7 @@ class YJ64BaseApp(App):
                 from llm_api import test_llm_api
                 result = test_llm_api(
                     self.user_data_dir,
+                    route_id="route_owner",
                     report=lambda event, **data: self._append_report(
                         "llm_api_" + event, **data
                     ),
@@ -813,17 +844,25 @@ class YJ64BaseApp(App):
 
         def run_chat() -> None:
             try:
-                from llm_api import generate_response
-                result = generate_response(
+                configured_participants = [
+                    name for name in ("Participant 1", "Participant 2", "Participant 3")
+                    if self._participant_config_status(name)["configured"]
+                ]
+                participant = (
+                    self.message_distributor.active_participant
+                    or (configured_participants[0] if configured_participants else "Owner")
+                )
+                result = self.message_distributor.dispatch_message(
                     self.user_data_dir,
+                    participant,
                     prompt,
                     report=lambda event, **data: self._append_report(
                         "llm_chat_" + event, **data
                     ),
                 )
                 report = (
-                    f"User: {prompt}\n"
-                    f"Model: {result['response']}"
+                    f"Owner: {prompt}\n"
+                    f"{participant}: {result['response']}"
                 )
                 event = (
                     "llm_chat_send_succeeded",
@@ -851,7 +890,7 @@ class YJ64BaseApp(App):
 
             def finish(*_args: Any) -> None:
                 self._append_report(event[0], **event[1])
-                self.chat_output.text = report
+                self.chat_output.text += f"\n\n{report}"
                 self.status.text = report
 
             Clock.schedule_once(finish, 0)
@@ -1086,432 +1125,44 @@ class YJ64BaseApp(App):
 
 
 YJ64BaseApp().run()
-
 END ALLOWED
-FILE: main.py BEGIN ALLOWED
-    def _participant_config_status(self, participant_name: str) -> dict[str, str | bool]:
-        from llm_api import load_config, participant_config_exists
 
-        exists = participant_config_exists(
-            self.user_data_dir,
-            participant_name=participant_name,
-        )
-        config = load_config(
-            self.user_data_dir,
-            participant_name=participant_name,
-        ) if exists else {}
-        mode = str(config.get("mode") or "llm").strip().lower()
-        configured = bool(
-            exists
-            and (
-                mode == "device"
-                or (
-                    str(config.get("api_key") or "").strip()
-                    and str(config.get("model") or "").strip()
-                )
-            )
-        )
-        return {
-            "configured": configured,
-            "mode": mode,
-            "provider": str(config.get("provider") or ""),
-            "model": str(config.get("model") or ""),
-        }
-
-    def _refresh_participant_buttons(self, *_: Any) -> None:
-        for participant_name, button in self.participant_buttons.items():
-            status = self._participant_config_status(participant_name)
-            if status["configured"]:
-                button.background_color = (0.2, 0.8, 0.2, 1)
-                button.text = f"{participant_name}  [CONNECTED]"
-            else:
-                button.background_color = (1, 1, 1, 1)
-                button.text = participant_name
-
-    def _open_participant_menu(self, participant_name: str) -> None:
-        status = self._participant_config_status(participant_name)
-        self._append_report(
-            "participant_menu_opened",
-            participant=participant_name,
-            configured=status["configured"],
-            mode=status["mode"],
-            provider=status["provider"],
-            model=status["model"],
-        )
-
-        content = BoxLayout(
-            orientation="vertical",
-            spacing=8,
-            padding=12,
-        )
-        title = Label(
-            text=f"{participant_name}\n"
-                 f"{status['provider'] or 'not configured'} / "
-                 f"{status['model'] or 'no model'}",
-            size_hint_y=None,
-            height=70,
-        )
-        content.add_widget(title)
-
-        write_button = Button(text="WRITE / GET ANSWER", size_hint_y=None, height=56)
-        write_button.bind(
-            on_release=lambda *_: (
-                popup.dismiss(),
-                self._open_participant_chat(participant_name),
-            )
-        )
-        content.add_widget(write_button)
-
-        settings_button = Button(text="SETTINGS", size_hint_y=None, height=56)
-        settings_button.bind(
-            on_release=lambda *_: (
-                popup.dismiss(),
-                self._open_participant_settings(participant_name),
-            )
-        )
-        content.add_widget(settings_button)
-
-        close_button = Button(text="CLOSE", size_hint_y=None, height=56)
-        close_button.bind(on_release=lambda *_: popup.dismiss())
-        content.add_widget(close_button)
-
-        popup = Popup(
-            title=participant_name,
-            content=content,
-            size_hint=(0.9, 0.55),
-        )
-        popup.open()
-
-    def _open_participant_settings(self, participant_name: str) -> None:
-        self._append_report(
-            "participant_settings_opened",
-            participant=participant_name,
-        )
-        from llm_settings import LLMSettingsPopup
-        LLMSettingsPopup(
-            self.user_data_dir,
-            participant_name=participant_name,
-            on_report=lambda event: self._append_report(
-                "participant_" + event,
-                participant=participant_name,
-            ),
-        ).open()
-
-    def _open_participant_chat(self, participant_name: str) -> None:
-        status = self._participant_config_status(participant_name)
-        self._append_report(
-            "participant_chat_opened",
-            participant=participant_name,
-            configured=status["configured"],
-            mode=status["mode"],
-            provider=status["provider"],
-            model=status["model"],
-        )
-
-        content = BoxLayout(orientation="vertical", spacing=8, padding=12)
-        output = TextInput(
-            text=f"{participant_name} response will appear here.",
-            readonly=True,
-            multiline=True,
-        )
-        prompt = TextInput(
-            hint_text=f"Message to {participant_name}...",
-            multiline=True,
-            size_hint_y=None,
-            height=110,
-            write_tab=False,
-        )
-        send = Button(text="SEND", size_hint_y=None, height=54)
-        close = Button(text="CLOSE", size_hint_y=None, height=54)
-
-        content.add_widget(output)
-        content.add_widget(prompt)
-        content.add_widget(send)
-        content.add_widget(close)
-
-        popup = Popup(
-            title=f"{participant_name} CHAT",
-            content=content,
-            size_hint=(0.94, 0.72),
-        )
-
-        def send_message(*_args: Any) -> None:
-            message = prompt.text.strip()
-            if not message:
-                return
-            prompt.text = ""
-            send.disabled = True
-            output.text = "Sending..."
-            self._append_report(
-                "participant_request_started",
-                participant=participant_name,
-                prompt=message,
-                provider=status["provider"],
-                model=status["model"],
-            )
-
-            def run_chat() -> None:
-                try:
-                    from llm_api import generate_response
-                    self._append_report(
-                        "participant_api_request_sent",
-                        participant=participant_name,
-                        provider=status["provider"],
-                        model=status["model"],
-                    )
-                    result = generate_response(
-                        self.user_data_dir,
-                        message,
-                        participant_name=participant_name,
-                        report=lambda event, **data: self._append_report(
-                            "participant_" + event,
-                            participant=participant_name,
-                            **data,
-                        ),
-                    )
-                    response = result["response"]
-                    event = (
-                        "participant_api_response_received",
-                        {
-                            "participant": participant_name,
-                            "provider": result["provider"],
-                            "model": result["model"],
-                            "response": response,
-                        },
-                    )
-                    text_value = response
-                except Exception as exc:
-                    event = (
-                        "participant_request_failed",
-                        {
-                            "participant": participant_name,
-                            "error_type": type(exc).__name__,
-                            "error": str(exc),
-                        },
-                    )
-                    text_value = (
-                        f"FAILED: {type(exc).__name__}: {exc}"
-                    )
-
-                def finish(*_finish_args: Any) -> None:
-                    self._append_report(event[0], **event[1])
-                    output.text = text_value
-                    send.disabled = False
-
-                Clock.schedule_once(finish, 0)
-
-            from threading import Thread
-            Thread(
-                target=run_chat,
-                name=f"yj64-{participant_name.lower().replace(' ', '-')}-chat",
-                daemon=True,
-            ).start()
-
-        send.bind(on_release=send_message)
-        close.bind(on_release=lambda *_: popup.dismiss())
-        popup.open()
-
-    def _open_group_dialogue(self, *_: Any) -> None:
-        participants = [
-            name
-            for name in ("Participant 1", "Participant 2", "Participant 3")
-            if self._participant_config_status(name)["configured"]
-        ]
-        if len(participants) < 2:
-            self._append_report(
-                "group_dialogue_start_rejected",
-                reason="at_least_two_participants_required",
-                participants=participants,
-            )
-            self.status.text = "Configure at least two participants first."
-            return
-
-        self._append_report(
-            "group_dialogue_opened",
-            participants=participants,
-        )
-        content = BoxLayout(orientation="vertical", spacing=8, padding=12)
-        output = TextInput(
-            text="Group dialogue is ready.\n",
-            readonly=True,
-            multiline=True,
-        )
-        prompt = TextInput(
-            hint_text="Your question to the participants...",
-            multiline=True,
-            size_hint_y=None,
-            height=110,
-            write_tab=False,
-        )
-        controls = BoxLayout(
-            spacing=8,
-            size_hint_y=None,
-            height=54,
-        )
-        send = Button(text="START", size_hint_x=0.5)
-        stop = Button(text="STOP DIALOGUE", size_hint_x=0.5, disabled=True)
-        controls.add_widget(send)
-        controls.add_widget(stop)
-        close = Button(text="CLOSE", size_hint_y=None, height=54)
-        content.add_widget(output)
-        content.add_widget(prompt)
-        content.add_widget(controls)
-        content.add_widget(close)
-
-        popup = Popup(
-            title="GROUP DIALOGUE",
-            content=content,
-            size_hint=(0.95, 0.86),
-            auto_dismiss=False,
-        )
-
-        state = {
-            "running": False,
-            "stop_requested": False,
-        }
-
-        def append_chat(text_value: str) -> None:
-            output.text = output.text.rstrip() + "\n" + text_value + "\n"
-
-        def request_stop(*_args: Any) -> None:
-            state["stop_requested"] = True
-            stop.disabled = True
-            self._append_report("group_dialogue_stop_requested")
-            append_chat("[STOP REQUESTED] Waiting for the current request to finish.")
-
-        def run_dialogue(question: str) -> None:
-            messages: list[dict[str, str]] = [
-                {"speaker": "Owner", "text": question}
-            ]
-            seen_by = {name: 0 for name in participants}
-            turn = 0
-            state["running"] = True
-            state["stop_requested"] = False
-            self._append_report(
-                "group_dialogue_started",
-                participants=participants,
-                question=question,
-            )
-
-            while not state["stop_requested"]:
-                participant = participants[turn % len(participants)]
-                status = self._participant_config_status(participant)
-                history: list[dict[str, str]] = []
-                for item in messages:
-                    role = "assistant" if item["speaker"] == participant else "user"
-                    history.append({
-                        "role": role,
-                        "content": f"{item['speaker']}: {item['text']}",
-                    })
-                new_count = len(messages) - seen_by[participant]
-                self._append_report(
-                    "group_dialogue_turn_started",
-                    participant=participant,
-                    turn=turn + 1,
-                    new_messages=new_count,
-                )
-                Clock.schedule_once(
-                    lambda _dt, p=participant: append_chat(f"\n[{p} is thinking...]"),
-                    0,
-                )
-                try:
-                    from llm_api import generate_response
-                    result = generate_response(
-                        self.user_data_dir,
-                        messages[-1]["text"],
-                        participant_name=participant,
-                        history=history,
-                        report=lambda event, **data: self._append_report(
-                            "group_dialogue_" + event,
-                            participant=participant,
-                            **data,
-                        ),
-                    )
-                    response = result["response"]
-                    messages.append({"speaker": participant, "text": response})
-                    seen_by[participant] = len(messages)
-                    self._append_report(
-                        "group_dialogue_turn_completed",
-                        participant=participant,
-                        turn=turn + 1,
-                        response=response,
-                        unseen_messages=new_count,
-                    )
-                    Clock.schedule_once(
-                        lambda _dt, p=participant, r=response:
-                        append_chat(f"{p}:\n{r}"),
-                        0,
-                    )
-                except Exception as exc:
-                    self._append_report(
-                        "group_dialogue_turn_failed",
-                        participant=participant,
-                        turn=turn + 1,
-                        error_type=type(exc).__name__,
-                        error=str(exc),
-                    )
-                    Clock.schedule_once(
-                        lambda _dt, p=participant, e=exc:
-                        append_chat(f"{p} FAILED: {type(e).__name__}: {e}"),
-                        0,
-                    )
-                    break
-                turn += 1
-            state["running"] = False
-            Clock.schedule_once(
-                lambda _dt: (
-                    setattr(send, "disabled", False),
-                    setattr(stop, "disabled", True),
-                ),
-                0,
-            )
-            self._append_report(
-                "group_dialogue_stopped",
-                participants=participants,
-                turns=turn,
-                stop_requested=state["stop_requested"],
-            )
-
-        def start_dialogue(*_args: Any) -> None:
-            question = prompt.text.strip()
-            if not question or state["running"]:
-                return
-            prompt.text = ""
-            send.disabled = True
-            stop.disabled = False
-            output.text = "Group dialogue started.\n"
-            from threading import Thread
-            Thread(
-                target=run_dialogue,
-                args=(question,),
-                name="yj64-group-dialogue",
-                daemon=True,
-            ).start()
-
-        send.bind(on_release=start_dialogue)
-        stop.bind(on_release=request_stop)
-        close.bind(on_release=lambda *_: popup.dismiss())
-        popup.open()
-END ALLOWED
 ============================================================
-🟡 ИЗМЕНЕНИЕ: LLM API — отдельные конфигурационные файлы участников.
+🟡 ИЗМЕНЕНИЕ: LLM API — центральный маршрутизатор и конфигурационные ячейки.
 FILE: llm_api.py BEGIN ALLOWED
-"""YJ-64 LLM API connectivity module.
+"""Central YJ-64 LLM router.
 
-Provider-level connectivity ported from kerosene-rose2 without its UI.
+Provider credentials and model settings live in one app-private router file.
+Participants send a route marker and mode; provider-specific HTTP details stay here.
 """
 from __future__ import annotations
 
 import json
-import os
 import ssl
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-CONFIG_RELATIVE_PATH = Path("yj64-llm-config.json")
-KEY_BUNDLE_RELATIVE_PATH = Path("yj64-llm-keys.json")
+ROUTER_CONFIG_RELATIVE_PATH = Path("yj64-router-config.json")
+LEGACY_CONFIG_RELATIVE_PATH = Path("yj64-llm-config.json")
+LEGACY_BUNDLE_RELATIVE_PATH = Path("yj64-llm-keys.json")
+LEGACY_PARTICIPANTS = (
+    ("Owner", "route_owner"),
+    ("Participant 1", "route_1"),
+    ("Participant 2", "route_2"),
+    ("Participant 3", "route_3"),
+)
+PROVIDER_DEFAULTS = {
+    "openai": "https://api.openai.com/v1",
+    "openai-responses": "https://api.openai.com/v1",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta",
+    "google": "https://generativelanguage.googleapis.com/v1beta",
+    "google-gemini": "https://generativelanguage.googleapis.com/v1beta",
+    "groq": "https://api.groq.com/openai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+}
 
 
 def _request(
@@ -1534,16 +1185,15 @@ def _request(
             body = json.dumps(payload).encode("utf-8")
             request_headers["Content-Type"] = "application/json"
         with urlopen(
-            Request(
-                url,
-                headers=request_headers,
-                method=method,
-                data=body,
-            ),
+            Request(url, headers=request_headers, method=method, data=body),
             timeout=timeout,
             context=context,
         ) as response:
-            return json.loads(response.read().decode("utf-8"))
+            raw = response.read().decode("utf-8")
+            parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                raise RuntimeError("API returned JSON that is not an object")
+            return parsed
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"HTTP {exc.code}: {detail[:800]}") from exc
@@ -1553,19 +1203,27 @@ def _request(
         raise RuntimeError("API returned invalid JSON") from exc
 
 
+def _route_id(route_id: str | None = None, participant_name: str = "Owner") -> str:
+    if route_id:
+        value = route_id.strip().lower()
+        if value.startswith("route_"):
+            return value
+        raise ValueError(f"Invalid route marker: {route_id}")
+    # Compatibility for existing callers while all chat dispatch moves to
+    # message_distributor.py. Provider/API details are not inferred here.
+    name = participant_name.strip().lower()
+    legacy_map = {
+        "owner": "route_owner",
+        "participant 1": "route_1",
+        "participant 2": "route_2",
+        "participant 3": "route_3",
+    }
+    if name not in legacy_map:
+        raise ValueError(f"No router route is registered for {participant_name}")
+    return legacy_map[name]
 
-def _participant_config_path(
-    user_data_dir: str | Path,
-    participant_name: str = "Owner",
-) -> Path:
-    if participant_name.strip().lower() == "owner":
-        return Path(user_data_dir) / CONFIG_RELATIVE_PATH
-    slug = participant_name.strip().lower().replace(" ", "-")
-    return Path(user_data_dir) / f"yj64-llm-config-{slug}.json"
 
-
-def _load_key_bundle(user_data_dir: str | Path) -> dict[str, Any]:
-    path = Path(user_data_dir) / KEY_BUNDLE_RELATIVE_PATH
+def _read_json_dict(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
     try:
@@ -1575,190 +1233,249 @@ def _load_key_bundle(user_data_dir: str | Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def _bundle_provider_config(
-    bundle: dict[str, Any],
-    provider: str = "",
-) -> dict[str, str]:
+def _write_router_data(user_data_dir: str | Path, data: dict[str, Any]) -> None:
+    path = Path(user_data_dir) / ROUTER_CONFIG_RELATIVE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_router_data(user_data_dir: str | Path) -> dict[str, Any]:
+    root = Path(user_data_dir)
+    path = root / ROUTER_CONFIG_RELATIVE_PATH
+    if path.is_file():
+        data = _read_json_dict(path)
+        routes = data.get("routes", {})
+        return {"routes": routes if isinstance(routes, dict) else {}}
+
+    # One-time migration from the old per-participant files into router cells.
+    routes: dict[str, dict[str, str]] = {}
+    migrated_paths: list[Path] = []
+    for participant, route_id in LEGACY_PARTICIPANTS:
+        legacy_path = (
+            root / LEGACY_CONFIG_RELATIVE_PATH
+            if participant == "Owner"
+            else root / f"yj64-llm-config-{participant.lower().replace(' ', '-')}.json"
+        )
+        legacy = _read_json_dict(legacy_path)
+        if legacy.get("api_key") and legacy.get("model"):
+            routes[route_id] = {
+                "provider": str(legacy.get("provider") or "openai"),
+                "model": str(legacy.get("model") or ""),
+                "api_key": str(legacy.get("api_key") or ""),
+                "endpoint": str(legacy.get("endpoint") or ""),
+            }
+            migrated_paths.append(legacy_path)
+
+    bundle_path = root / LEGACY_BUNDLE_RELATIVE_PATH
+    bundle = _read_json_dict(bundle_path)
     providers = bundle.get("providers", {})
-    if not isinstance(providers, dict):
-        providers = {}
-    provider_id = provider.strip().lower()
-    selected = providers.get(provider_id, {})
-    if not isinstance(selected, dict):
-        selected = {}
-    if not provider_id:
-        provider_id = str(bundle.get("default_provider") or "").strip().lower()
-        selected = providers.get(provider_id, {})
-        if not isinstance(selected, dict):
-            selected = {}
-    return {
-        "provider": provider_id,
-        "model": str(selected.get("model") or ""),
-        "api_key": str(selected.get("api_key") or ""),
-        "endpoint": str(selected.get("endpoint") or ""),
-    }
+    if isinstance(providers, dict):
+        next_index = 1
+        for provider_name, raw in providers.items():
+            if not isinstance(raw, dict) or not raw.get("api_key") or not raw.get("model"):
+                continue
+            while f"route_{next_index}" in routes:
+                next_index += 1
+            routes[f"route_{next_index}"] = {
+                "provider": str(provider_name),
+                "model": str(raw.get("model") or ""),
+                "api_key": str(raw.get("api_key") or ""),
+                "endpoint": str(raw.get("endpoint") or ""),
+            }
+            next_index += 1
+        if routes:
+            migrated_paths.append(bundle_path)
+
+    data = {"routes": routes}
+    if routes:
+        _write_router_data(root, data)
+        # Remove migrated duplicate credential files only after the central
+        # router file has been written successfully.
+        for legacy_path in migrated_paths:
+            try:
+                legacy_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return data
+
+
+def list_routes(user_data_dir: str | Path) -> list[dict[str, str]]:
+    routes = _load_router_data(user_data_dir).get("routes", {})
+    if not isinstance(routes, dict):
+        return []
+    result: list[dict[str, str]] = []
+    for route_id, raw in routes.items():
+        if not isinstance(raw, dict):
+            continue
+        config = {str(k): str(v) for k, v in raw.items()}
+        if config.get("api_key") and config.get("model"):
+            result.append({
+                "route_id": str(route_id),
+                "provider": config.get("provider", ""),
+                "model": config.get("model", ""),
+                "endpoint": config.get("endpoint", ""),
+            })
+    return sorted(result, key=lambda item: item["route_id"])
 
 
 def load_config(
     user_data_dir: str | Path,
     participant_name: str = "Owner",
+    route_id: str | None = None,
 ) -> dict[str, str]:
-    path = _participant_config_path(user_data_dir, participant_name)
-    config: dict[str, str] = {}
-    if path.exists():
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                config = {str(k): str(v) for k, v in raw.items()}
-        except (OSError, ValueError):
-            pass
-
-    bundle = _load_key_bundle(user_data_dir)
-    if not bundle:
-        if "providers" in config or "default_provider" in config:
-            bundle = config
-            config = {}
-    bundle_config = _bundle_provider_config(
-        bundle,
-        str(config.get("provider") or bundle.get("default_provider") or ""),
-    )
-    provider = str(
-        config.get("provider")
-        or bundle_config.get("provider")
-        or os.getenv("YJ64_LLM_PROVIDER", "openai")
-    )
-    if provider != bundle_config.get("provider"):
-        bundle_config = _bundle_provider_config(bundle, provider)
-
+    selected_route = _route_id(route_id, participant_name)
+    routes = _load_router_data(user_data_dir).get("routes", {})
+    raw = routes.get(selected_route, {}) if isinstance(routes, dict) else {}
+    if not isinstance(raw, dict):
+        raw = {}
     return {
-        "provider": provider,
-        "model": config.get("model") or bundle_config.get("model") or os.getenv("YJ64_LLM_MODEL", ""),
-        "api_key": config.get("api_key") or bundle_config.get("api_key") or os.getenv("YJ64_LLM_API_KEY", ""),
-        "endpoint": config.get("endpoint") or bundle_config.get("endpoint") or os.getenv("YJ64_LLM_ENDPOINT", ""),
-        "mode": config.get("mode") or "llm",
+        "route_id": selected_route,
+        "provider": str(raw.get("provider") or ""),
+        "model": str(raw.get("model") or ""),
+        "api_key": str(raw.get("api_key") or ""),
+        "endpoint": str(raw.get("endpoint") or ""),
     }
+
+
+def route_config_exists(
+    user_data_dir: str | Path,
+    route_id: str,
+) -> bool:
+    config = load_config(user_data_dir, route_id=route_id)
+    return bool(config.get("api_key") and config.get("model") and config.get("provider"))
 
 
 def participant_config_exists(
     user_data_dir: str | Path,
     participant_name: str,
 ) -> bool:
-    path = _participant_config_path(
-        user_data_dir,
-        participant_name=participant_name,
-    )
-    if path.is_file():
-        return True
-    config = load_config(user_data_dir, participant_name=participant_name)
-    return bool(config.get("api_key") and config.get("model"))
+    return route_config_exists(user_data_dir, _route_id(participant_name=participant_name))
 
 
 def save_config(
     user_data_dir: str | Path,
     config: dict[str, str],
     participant_name: str = "Owner",
+    route_id: str | None = None,
 ) -> None:
-    path = _participant_config_path(user_data_dir, participant_name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(config, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    selected_route = _route_id(route_id, participant_name)
+    data = _load_router_data(user_data_dir)
+    routes = data.setdefault("routes", {})
+    routes[selected_route] = {
+        "provider": str(config.get("provider") or "").strip().lower(),
+        "model": str(config.get("model") or "").strip(),
+        "api_key": str(config.get("api_key") or "").strip(),
+        "endpoint": str(config.get("endpoint") or "").strip(),
+    }
+    _write_router_data(user_data_dir, data)
 
 
-def generate_test_response(
-    user_data_dir: str | Path,
-    report: Any = None,
-) -> dict[str, Any]:
-    """Run the fixed Gemini generation smoke test through the current provider path."""
-    prompt = "Reply with exactly: YJ64_OK"
-    _report(report, "generation_config_loaded")
-    result = generate_response(
-        user_data_dir,
-        prompt,
-        report=report,
-        participant_name="Owner",
-    )
-    return result
+def _report(report: Any, event: str, **data: Any) -> None:
+    if report is not None:
+        report(event, **data)
 
 
-def _extract_interaction_text(data: dict[str, Any]) -> str:
-    """Extract model text from a Gemini Interactions API response."""
-    output_text = data.get("output_text")
-    if isinstance(output_text, str) and output_text.strip():
-        return output_text.strip()
+def fetch_models(
+    provider: str,
+    api_key: str,
+    endpoint: str = "",
+) -> list[str]:
+    provider_id = provider.strip().lower()
+    key = api_key.strip()
+    if not key:
+        raise RuntimeError("LLM API key is not configured")
+    base = (endpoint or PROVIDER_DEFAULTS.get(provider_id, "")).rstrip("/")
+    if not base:
+        raise RuntimeError("Custom provider requires an API endpoint")
+    if provider_id in {"gemini", "google", "google-gemini"}:
+        data = _request("GET", base + "/models", {"x-goog-api-key": key})
+        models = data.get("models", [])
+        result = []
+        for item in models if isinstance(models, list) else []:
+            if isinstance(item, dict) and item.get("name"):
+                name = str(item["name"])
+                result.append(name[7:] if name.startswith("models/") else name)
+        return sorted(set(result), key=str.casefold)
 
-    steps = data.get("steps", [])
+    for suffix in ("/chat/completions", "/responses", "/models"):
+        if base.endswith(suffix):
+            base = base[:-len(suffix)]
+            break
+    headers = {"Authorization": f"Bearer {key}"}
+    if provider_id == "openrouter":
+        headers.update({
+            "HTTP-Referer": "https://github.com/concreteballs/yj64-base",
+            "X-Title": "YJ-64",
+        })
+    data = _request("GET", base + "/models", headers)
+    models = data.get("data", [])
+    ids = [
+        str(item["id"])
+        for item in models if isinstance(models, list)
+        if isinstance(item, dict) and item.get("id")
+    ]
+    return sorted(set(ids), key=str.casefold)
+
+
+def _gemini_contents(
+    prompt: str,
+    history: list[dict[str, str]] | None,
+) -> list[dict[str, Any]]:
+    contents: list[dict[str, Any]] = []
+    for item in history or []:
+        role = str(item.get("role") or "user").strip().lower()
+        content = str(item.get("content") or "")
+        if not content:
+            continue
+        contents.append({
+            "role": "model" if role in {"assistant", "model"} else "user",
+            "parts": [{"text": content}],
+        })
+    if not contents or str((history or [{}])[-1].get("content") or "") != prompt:
+        contents.append({"role": "user", "parts": [{"text": prompt}]})
+    return contents
+
+
+def _extract_gemini_text(data: dict[str, Any]) -> str:
+    candidates = data.get("candidates", [])
+    if not isinstance(candidates, list):
+        return ""
     texts: list[str] = []
-    if isinstance(steps, list):
-        for step in steps:
-            if not isinstance(step, dict):
-                continue
-            step_content = step.get("content", [])
-            if not isinstance(step_content, list):
-                continue
-            for part in step_content:
-                if isinstance(part, dict) and part.get("type") == "text":
-                    text = part.get("text")
-                    if text is not None:
-                        texts.append(str(text))
+    for candidate in candidates[:1]:
+        if not isinstance(candidate, dict):
+            continue
+        content = candidate.get("content", {})
+        parts = content.get("parts", []) if isinstance(content, dict) else []
+        if isinstance(parts, list):
+            for part in parts:
+                if isinstance(part, dict) and part.get("text") is not None:
+                    texts.append(str(part["text"]))
     return "".join(texts).strip()
 
 
-def _generate_gemini_interaction(
-    config: dict[str, str],
-    prompt: str,
-    model: str,
-    key: str,
-    report: Any = None,
-    history: list[dict[str, str]] | None = None,
-) -> str:
-    endpoint = (
-        config["endpoint"]
-        or "https://generativelanguage.googleapis.com/v1beta"
-    ).rstrip("/")
-    url = endpoint + "/interactions"
-
-    input_text = prompt
-    if history:
-        transcript = []
-        for item in history:
-            role = str(item.get("role") or "user")
-            transcript.append(f"{role}: {str(item.get('content') or '')}")
-        transcript.append(f"user: {prompt}")
-        input_text = "\n".join(transcript)
-
-    _report(
-        report,
-        "generation_request_started",
-        provider=config["provider"],
-        model=model,
-        endpoint=url,
-        prompt=prompt,
-        api="interactions",
-    )
-    data = _request(
-        "POST",
-        url,
-        {"x-goog-api-key": key},
-        payload={
-            "model": model,
-            "input": input_text,
-        },
-    )
-    _report(
-        report,
-        "generation_response_received",
-        provider=config["provider"],
-        api="interactions",
-    )
-    response_text = _extract_interaction_text(data)
-    if not response_text:
-        raise RuntimeError(
-            "Gemini Interactions API returned no text: "
-            f"{json.dumps(data, ensure_ascii=False)[:1200]}"
-        )
-    return response_text
+def _extract_openai_text(data: dict[str, Any]) -> str:
+    output_text = data.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+    output = data.get("output", [])
+    texts: list[str] = []
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content", [])
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("text") is not None:
+                        texts.append(str(part["text"]))
+    if texts:
+        return "".join(texts).strip()
+    choices = data.get("choices", [])
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        message = choices[0].get("message", {})
+        if isinstance(message, dict):
+            return str(message.get("content") or "").strip()
+    return ""
 
 
 def generate_response(
@@ -1767,28 +1484,53 @@ def generate_response(
     report: Any = None,
     participant_name: str = "Owner",
     history: list[dict[str, str]] | None = None,
+    route_id: str | None = None,
+    mode: str = "text",
+    operation_id: str | None = None,
 ) -> dict[str, Any]:
-    _report(report, "generation_config_loaded")
-    config = load_config(user_data_dir, participant_name=participant_name)
+    """Single gateway entry point; mode and route are markers, not API details."""
+    operation = operation_id or uuid.uuid4().hex
+    selected_route = _route_id(route_id, participant_name)
+    selected_mode = str(mode or "text").strip().lower()
+    _report(
+        report, "gateway_request_received",
+        operation_id=operation, route_id=selected_route, mode=selected_mode,
+        prompt=prompt,
+    )
+    if selected_mode != "text":
+        _report(
+            report, "gateway_mode_rejected",
+            operation_id=operation, route_id=selected_route, mode=selected_mode,
+            reason="Only text mode is implemented in this build",
+        )
+        raise RuntimeError(f"Request mode '{selected_mode}' is not implemented yet")
+
+    config = load_config(user_data_dir, route_id=selected_route)
     provider = config["provider"].strip().lower()
     model = config["model"].strip()
     key = config["api_key"].strip()
+    if not provider or not key or not model:
+        _report(
+            report, "gateway_config_missing",
+            operation_id=operation, route_id=selected_route,
+            provider=provider, model=model,
+            configured=bool(provider and key and model),
+        )
+        raise RuntimeError(f"Router cell {selected_route} is not fully configured")
     _report(
-        report,
-        "generation_config_checked",
-        provider=provider,
-        model=model,
-        configured=bool(key and model),
+        report, "gateway_config_loaded",
+        operation_id=operation, route_id=selected_route,
+        provider=provider, model=model, configured=True,
     )
-    if not key:
-        raise RuntimeError("LLM API key is not configured")
-    if not model:
-        raise RuntimeError("LLM model is not configured")
-    if provider in {"openai", "openai-responses"}:
-        endpoint = (
-            config["endpoint"]
-            or "https://api.openai.com/v1/responses"
-        ).rstrip("/")
+
+    if provider in {"gemini", "google", "google-gemini"}:
+        base = (config["endpoint"] or PROVIDER_DEFAULTS["gemini"]).rstrip("/")
+        url = f"{base}/models/{model}:generateContent"
+        payload = {"contents": _gemini_contents(prompt, history)}
+        headers = {"x-goog-api-key": key}
+        api_method = "generateContent"
+    elif provider in {"openai", "openai-responses"}:
+        endpoint = (config["endpoint"] or "https://api.openai.com/v1/responses").rstrip("/")
         if endpoint.endswith("/chat/completions"):
             url = endpoint
             payload = {
@@ -1801,522 +1543,646 @@ def generate_response(
                 "model": model,
                 "input": history or [{"role": "user", "content": prompt}],
             }
-        _report(
-            report,
-            "generation_request_started",
-            provider=provider,
-            model=model,
-            endpoint=url,
-            prompt=prompt,
-        )
-        data = _request(
-            "POST",
-            url,
-            {"Authorization": f"Bearer {key}"},
-            payload=payload,
-        )
-        _report(report, "generation_response_received", provider=provider)
-        response_text = str(data.get("output_text") or "").strip()
-        if not response_text:
-            output = data.get("output", [])
-            texts: list[str] = []
-            if isinstance(output, list):
-                for item in output:
-                    if not isinstance(item, dict):
-                        continue
-                    content = item.get("content", [])
-                    if not isinstance(content, list):
-                        continue
-                    for part in content:
-                        if isinstance(part, dict) and part.get("text") is not None:
-                            texts.append(str(part["text"]))
-            response_text = "".join(texts).strip()
-        if not response_text:
-            choices = data.get("choices", [])
-            if isinstance(choices, list) and choices:
-                message = choices[0].get("message", {})
-                if isinstance(message, dict):
-                    response_text = str(message.get("content") or "").strip()
-        if not response_text:
-            raise RuntimeError(
-                f"OpenAI returned no text: {json.dumps(data, ensure_ascii=False)[:1200]}"
-            )
-        _report(
-            report,
-            "generation_completed",
-            provider=provider,
-            model=model,
-            response=response_text,
-        )
-        return {
-            "provider": config["provider"],
-            "model": model,
-            "prompt": prompt,
-            "response": response_text,
-        }
-
-    if provider in {"groq", "openrouter"} or provider not in {
-        "gemini", "google", "google-gemini", "openai", "openai-responses"
-    }:
-        defaults = {
-            "groq": "https://api.groq.com/openai/v1",
-            "openrouter": "https://openrouter.ai/api/v1",
-        }
-        base = (config["endpoint"] or defaults.get(provider, "")).rstrip("/")
+        headers = {"Authorization": f"Bearer {key}"}
+        api_method = "responses" if url.endswith("/responses") else "chat_completions"
+    else:
+        base = (config["endpoint"] or PROVIDER_DEFAULTS.get(provider, "")).rstrip("/")
         if not base:
-            raise RuntimeError(
-                "Custom provider requires an API endpoint compatible with Chat Completions"
-            )
+            raise RuntimeError(f"Router cell {selected_route} requires an API endpoint")
         url = base if base.endswith("/chat/completions") else base + "/chat/completions"
         payload = {
             "model": model,
             "messages": history or [{"role": "user", "content": prompt}],
         }
-        _report(
-            report,
-            "generation_request_started",
-            provider=provider,
-            model=model,
-            endpoint=url,
-            prompt=prompt,
-        )
         headers = {"Authorization": f"Bearer {key}"}
         if provider == "openrouter":
             headers.update({
                 "HTTP-Referer": "https://github.com/concreteballs/yj64-base",
                 "X-Title": "YJ-64",
             })
-        data = _request("POST", url, headers, payload=payload)
-        _report(report, "generation_response_received", provider=provider)
-        choices = data.get("choices", [])
-        response_text = ""
-        if isinstance(choices, list) and choices:
-            message = choices[0].get("message", {})
-            if isinstance(message, dict):
-                response_text = str(message.get("content") or "").strip()
-        if not response_text:
-            raise RuntimeError(
-                f"{provider} returned no text: {json.dumps(data, ensure_ascii=False)[:1200]}"
-            )
-        _report(
-            report,
-            "generation_completed",
-            provider=provider,
-            model=model,
-            response=response_text,
-        )
-        return {
-            "provider": config["provider"],
-            "model": model,
-            "prompt": prompt,
-            "response": response_text,
-        }
+        api_method = "chat_completions"
 
-    response_text = _generate_gemini_interaction(
-        config,
-        prompt,
-        model,
-        key,
-        report=report,
-        history=history,
+    _report(
+        report, "gateway_request_prepared",
+        operation_id=operation, route_id=selected_route,
+        provider=provider, model=model, api_method=api_method,
+        http_method="POST", endpoint=url, prompt=prompt,
+        history_count=len(history or []),
     )
     _report(
-        report,
-        "generation_completed",
-        provider=provider,
-        model=model,
-        response=response_text,
+        report, "gateway_request_sending",
+        operation_id=operation, route_id=selected_route,
+        provider=provider, model=model, api_method=api_method,
+    )
+    data = _request("POST", url, headers, payload=payload)
+    _report(
+        report, "gateway_http_response_received",
+        operation_id=operation, route_id=selected_route,
+        provider=provider, model=model, api_method=api_method,
+    )
+
+    response_text = (
+        _extract_gemini_text(data)
+        if provider in {"gemini", "google", "google-gemini"}
+        else _extract_openai_text(data)
+    )
+    if not response_text:
+        _report(
+            report, "gateway_response_text_missing",
+            operation_id=operation, route_id=selected_route,
+            provider=provider, model=model,
+            response_shape=list(data.keys()),
+        )
+        raise RuntimeError(
+            f"{provider} returned an HTTP response without extractable text: "
+            f"{json.dumps(data, ensure_ascii=False)[:1000]}"
+        )
+    _report(
+        report, "gateway_response_ready",
+        operation_id=operation, route_id=selected_route,
+        provider=provider, model=model,
+        response_length=len(response_text),
     )
     return {
+        "route_id": selected_route,
         "provider": config["provider"],
         "model": model,
         "prompt": prompt,
         "response": response_text,
+        "operation_id": operation,
     }
 
-def _report(report: Any, event: str, **data: Any) -> None:
-    if report is not None:
-        report(event, **data)
 
-
-def fetch_models(
-    provider: str,
-    api_key: str,
-    endpoint: str = "",
-) -> list[str]:
-    """Return model IDs visible to this API key without saving the key."""
-    provider_id = provider.strip().lower()
-    key = api_key.strip()
-    if not key:
-        raise RuntimeError("LLM API key is not configured")
-
-    if provider_id in {"gemini", "google", "google-gemini"}:
-        base = (endpoint or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
-        data = _request("GET", base + "/models", {"x-goog-api-key": key})
-        models = data.get("models", []) if isinstance(data, dict) else []
-        result = []
-        for item in models:
-            if not isinstance(item, dict) or not item.get("name"):
-                continue
-            name = str(item["name"])
-            result.append(name[7:] if name.startswith("models/") else name)
-        return sorted(set(result), key=str.casefold)
-
-    defaults = {
-        "openai": "https://api.openai.com/v1",
-        "openai-responses": "https://api.openai.com/v1",
-        "groq": "https://api.groq.com/openai/v1",
-        "openrouter": "https://openrouter.ai/api/v1",
-    }
-    base = (endpoint or defaults.get(provider_id, "")).rstrip("/")
-    if not base:
-        raise RuntimeError("Custom provider requires an API endpoint")
-    for suffix in ("/chat/completions", "/responses"):
-        if base.endswith(suffix):
-            base = base[:-len(suffix)]
-            break
-    models_url = base + "/models"
-    headers = {"Authorization": f"Bearer {key}"}
-    if provider_id == "openrouter":
-        headers.update({
-            "HTTP-Referer": "https://github.com/concreteballs/yj64-base",
-            "X-Title": "YJ-64",
-        })
-    data = _request("GET", models_url, headers)
-    models = data.get("data", []) if isinstance(data, dict) else []
-    ids = [
-        str(item["id"])
-        for item in models
-        if isinstance(item, dict) and item.get("id")
-    ]
-    return sorted(set(ids), key=str.casefold)
+def generate_test_response(
+    user_data_dir: str | Path,
+    report: Any = None,
+    route_id: str = "route_owner",
+) -> dict[str, Any]:
+    prompt = "Reply with exactly: YJ64_OK"
+    return generate_response(
+        user_data_dir, prompt, report=report, route_id=route_id, mode="text"
+    )
 
 
 def test_llm_api(
     user_data_dir: str | Path,
     report: Any = None,
     participant_name: str = "Owner",
+    route_id: str | None = None,
 ) -> dict[str, Any]:
-    _report(report, "api_config_loaded")
-    config = load_config(user_data_dir, participant_name=participant_name)
+    selected_route = _route_id(route_id, participant_name)
+    config = load_config(user_data_dir, route_id=selected_route)
     provider = config["provider"].strip().lower()
     key = config["api_key"].strip()
-    _report(report, "api_key_check", configured=bool(key))
-    if not key:
-        raise RuntimeError("LLM API key is not configured")
+    model = config["model"].strip()
+    _report(
+        report, "router_connection_test_started",
+        route_id=selected_route, provider=provider, model=model,
+        key_configured=bool(key),
+    )
+    if not key or not model or not provider:
+        raise RuntimeError(f"Router cell {selected_route} is not fully configured")
+    endpoint = config["endpoint"] or PROVIDER_DEFAULTS.get(provider, "")
+    models = fetch_models(provider, key, endpoint)
+    listed = model in models
+    _report(
+        report, "router_connection_test_completed",
+        route_id=selected_route, provider=provider, model=model,
+        model_list_count=len(models), configured_model_listed=listed,
+        available_models=models,
+    )
+    result = (
+        "API reachable; configured model is listed"
+        if listed else
+        f"API reachable; configured model not listed among {len(models)} models"
+    )
+    return {
+        "route_id": selected_route, "provider": config["provider"],
+        "model": model, "result": result, "models": models,
+    }
 
-    if provider in {"openai", "openai-responses", "gemini", "google", "google-gemini", "groq", "openrouter"}:
-        defaults = {
-            "openai": "https://api.openai.com/v1",
-            "openai-responses": "https://api.openai.com/v1",
-            "gemini": "https://generativelanguage.googleapis.com/v1beta",
-            "google": "https://generativelanguage.googleapis.com/v1beta",
-            "google-gemini": "https://generativelanguage.googleapis.com/v1beta",
-            "groq": "https://api.groq.com/openai/v1",
-            "openrouter": "https://openrouter.ai/api/v1",
-        }
-        endpoint = config["endpoint"] or defaults.get(provider, "")
-        _report(report, "api_request_started", provider=provider, endpoint=endpoint)
-        ids = fetch_models(provider, key, endpoint)
-        _report(report, "api_request_succeeded", provider=provider)
-    else:
-        _report(report, "api_request_started", provider=provider, endpoint=config["endpoint"])
-        ids = fetch_models(provider, key, config["endpoint"])
-        _report(report, "api_request_succeeded", provider=provider)
 
-    model = config["model"]
-    if model and model not in ids:
-        result = f"API reachable and key accepted; configured model not listed: {model}"
-    else:
-        result = f"API reachable and key accepted; models visible: {len(ids)}"
-    _report(report, "api_test_completed", provider=config["provider"], model=model, result=result)
-    return {"provider": config["provider"], "model": model, "result": result}
-
+def test_all_routes(
+    user_data_dir: str | Path,
+    report: Any = None,
+) -> dict[str, Any]:
+    prompt = "Reply with exactly: YJ64_OK"
+    routes = list_routes(user_data_dir)
+    if not routes:
+        raise RuntimeError("No saved router cells are configured")
+    results: list[dict[str, str]] = []
+    report_lines = ["YJ-64 CENTRAL ROUTER — TEST ALL SAVED CONNECTIONS"]
+    for item in routes:
+        route_id = item["route_id"]
+        provider = item["provider"]
+        model = item["model"]
+        _report(
+            report, "router_all_test_route_started",
+            route_id=route_id, provider=provider, model=model,
+            prompt=prompt,
+        )
+        try:
+            result = generate_response(
+                user_data_dir, prompt, report=report,
+                route_id=route_id, mode="text",
+            )
+            status = "PASS"
+            detail = result["response"]
+        except Exception as exc:
+            status = "FAIL"
+            detail = f"{type(exc).__name__}: {exc}"
+            _report(
+                report, "router_all_test_route_failed",
+                route_id=route_id, provider=provider, model=model,
+                error_type=type(exc).__name__, error=str(exc),
+            )
+        else:
+            _report(
+                report, "router_all_test_route_completed",
+                route_id=route_id, provider=provider, model=model,
+                response=result["response"],
+            )
+        results.append({
+            "route_id": route_id, "provider": provider, "model": model,
+            "status": status, "detail": detail,
+        })
+        report_lines.extend([
+            "", f"[{status}] {route_id} — {provider} / {model}",
+            f"Result: {detail}",
+        ])
+    passed = sum(1 for item in results if item["status"] == "PASS")
+    report_lines.extend(["", f"Summary: {passed}/{len(results)} connections passed"])
+    return {"results": results, "report": "\n".join(report_lines)}
 END ALLOWED
 
 
 ============================================================
 🟢 ГОТОВО: LLM SETTINGS — отдельное сохранение настроек участника.
 FILE: llm_settings.py BEGIN ALLOWED
-"""YJ-64 LLM connection settings UI.
-
-Keeps provider credentials in the app-private files directory and delegates
-network access to llm_api.py.
-"""
+"""Central LLM router settings UI for YJ-64."""
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Thread
 from typing import Any, Callable
 
+from kivy.clock import Clock
 from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
+from kivy.uix.scrollview import ScrollView
 from kivy.uix.spinner import Spinner
 from kivy.uix.textinput import TextInput
 
-from llm_api import load_config, save_config, test_llm_api
+from llm_api import (
+    fetch_models,
+    generate_test_response,
+    list_routes,
+    load_config,
+    save_config,
+    test_all_routes,
+    test_llm_api,
+)
+
+ROUTE_LABELS = {
+    "route_owner": "Owner / route_owner",
+    "route_1": "Participant 1 / route_1",
+    "route_2": "Participant 2 / route_2",
+    "route_3": "Participant 3 / route_3",
+}
+LABEL_ROUTES = {label: route for route, label in ROUTE_LABELS.items()}
+PROVIDERS = ("openai", "gemini", "groq", "openrouter", "custom")
 
 
 class LLMSettingsPopup(Popup):
+    """A single central router editor; participant screens only select a route cell."""
+
     def __init__(
         self,
         user_data_dir: str | Path,
         on_test: Callable[[], None] | None = None,
         participant_name: str = "Owner",
-        on_report: Callable[[str], None] | None = None,
+        route_id: str | None = None,
+        on_report: Callable[..., None] | None = None,
+        on_copy: Callable[[str], None] | None = None,
         **kwargs: Any,
     ) -> None:
         self.user_data_dir = Path(user_data_dir)
-        self.participant_name = participant_name
         self.on_test = on_test
         self.on_report = on_report
-        self._report("settings_init_started")
-        config = load_config(
-            self.user_data_dir,
-            participant_name=self.participant_name,
-        )
-        self._report("settings_config_loaded")
+        self.on_copy = on_copy
+        self.route_id = route_id or self._route_from_participant(participant_name)
+        self._loading = False
+        self._model_load_event = None
+        self._report("router_settings_opened", route_id=self.route_id)
 
-        content = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(7))
-        content.add_widget(Label(
-            text=f"{self.participant_name} / LLM MODEL / API CONNECTION",
-            bold=True,
+        self.content_box = BoxLayout(
+            orientation="vertical", padding=dp(10), spacing=dp(7),
             size_hint_y=None,
-            height=dp(36),
+        )
+        self.content_box.bind(minimum_height=self.content_box.setter("height"))
+        self.content_box.add_widget(Label(
+            text="CENTRAL LLM ROUTER",
+            bold=True, size_hint_y=None, height=dp(34),
+        ))
+        self.content_box.add_widget(Label(
+            text="API keys and model settings are saved in the router, not in participants.",
+            size_hint_y=None, height=dp(42),
         ))
 
-        content.add_widget(Label(text="Provider", size_hint_y=None, height=dp(24)))
-        known_providers = ("openai", "gemini", "groq", "openrouter", "custom")
-        current_provider = (config.get("provider") or "openai").strip().lower()
+        self.route_picker = Spinner(
+            text=ROUTE_LABELS.get(self.route_id, self.route_id),
+            values=tuple(ROUTE_LABELS.values()),
+            size_hint_y=None, height=dp(44),
+        )
+        self.route_picker.bind(text=self._route_selected)
+        self.content_box.add_widget(Label(
+            text="Router cell / participant route",
+            size_hint_y=None, height=dp(22),
+        ))
+        self.content_box.add_widget(self.route_picker)
+
+        self.saved_routes = Label(
+            text="", size_hint_y=None, height=dp(62),
+            halign="left", valign="middle",
+        )
+        self.saved_routes.bind(size=lambda widget, value: setattr(widget, "text_size", value))
+        self.content_box.add_widget(self.saved_routes)
+
         self.provider = Spinner(
-            text=current_provider if current_provider in known_providers else "custom",
-            values=known_providers,
-            size_hint_y=None,
-            height=dp(42),
+            text="openai", values=PROVIDERS,
+            size_hint_y=None, height=dp(42),
         )
         self.provider.bind(text=self._provider_changed)
-        content.add_widget(self.provider)
+        self.content_box.add_widget(Label(text="Provider", size_hint_y=None, height=dp(22)))
+        self.content_box.add_widget(self.provider)
 
-        content.add_widget(Label(text="Custom provider name (for Custom only)", size_hint_y=None, height=dp(24)))
         self.custom_provider = TextInput(
-            text=config.get("provider", "") if current_provider not in known_providers else "",
-            hint_text="Provider ID, e.g. my-provider",
-            multiline=False,
-            size_hint_y=None,
-            height=dp(42),
+            hint_text="Custom provider ID (only for custom)",
+            multiline=False, size_hint_y=None, height=dp(42),
         )
-        self.custom_provider.bind(text=self._custom_provider_changed)
-        content.add_widget(self.custom_provider)
+        self.content_box.add_widget(self.custom_provider)
 
-        content.add_widget(Label(text="Model", size_hint_y=None, height=dp(24)))
         self.model_picker = Spinner(
-            text=config.get("model", "") or "Select or load models",
-            values=(),
-            size_hint_y=None,
-            height=dp(42),
+            text="Load or select model", values=(),
+            size_hint_y=None, height=dp(42),
         )
         self.model_picker.bind(text=self._model_selected)
-        content.add_widget(self.model_picker)
+        self.content_box.add_widget(Label(text="Model", size_hint_y=None, height=dp(22)))
+        self.content_box.add_widget(self.model_picker)
         self.model = TextInput(
-            text=config.get("model", ""),
-            hint_text="Or enter model ID manually",
-            multiline=False,
-            size_hint_y=None,
-            height=dp(42),
+            hint_text="Model ID", multiline=False,
+            size_hint_y=None, height=dp(42),
         )
-        self.model.bind(text=self._model_text_changed)
-        content.add_widget(self.model)
+        self.content_box.add_widget(self.model)
 
-        content.add_widget(Label(text="API endpoint", size_hint_y=None, height=dp(24)))
         self.endpoint = TextInput(
-            text=config.get("endpoint", ""),
-            hint_text="Leave empty for provider default",
-            multiline=False,
-            size_hint_y=None,
-            height=dp(42),
+            hint_text="API endpoint (leave blank for provider default)",
+            multiline=False, size_hint_y=None, height=dp(42),
         )
-        self.endpoint.bind(text=self._endpoint_changed)
-        content.add_widget(self.endpoint)
+        self.content_box.add_widget(Label(text="API endpoint", size_hint_y=None, height=dp(22)))
+        self.content_box.add_widget(self.endpoint)
 
-        content.add_widget(Label(text="API key", size_hint_y=None, height=dp(24)))
         self.api_key = TextInput(
-            text=config.get("api_key", ""),
-            hint_text="Enter your API key",
-            password=True,
-            multiline=False,
-            size_hint_y=None,
-            height=dp(42),
+            hint_text="API key for this router cell", password=True,
+            multiline=False, size_hint_y=None, height=dp(42),
         )
-        self.api_key.bind(text=self._api_key_changed)
-        content.add_widget(self.api_key)
-
-        model_row = BoxLayout(spacing=dp(7), size_hint_y=None, height=dp(42))
-        self.load_models_button = Button(text="LOAD MODELS")
-        self.load_models_button.bind(on_release=self._load_models)
-        model_row.add_widget(self.load_models_button)
-        content.add_widget(model_row)
+        self.content_box.add_widget(Label(text="API key (stored by the central router)", size_hint_y=None, height=dp(22)))
+        self.content_box.add_widget(self.api_key)
 
         self.status = Label(
-            text="Enter an API key to load available models. Key stays in app-private storage after SAVE.",
-            size_hint_y=None,
-            height=dp(54),
+            text="Choose a router cell, enter its connection details, then SAVE.",
+            size_hint_y=None, height=dp(56), halign="left", valign="middle",
         )
-        content.add_widget(self.status)
+        self.status.bind(size=lambda widget, value: setattr(widget, "text_size", value))
+        self.content_box.add_widget(self.status)
 
-        row = BoxLayout(spacing=dp(7), size_hint_y=None, height=dp(46))
-        save = Button(text="SAVE")
-        save.bind(on_release=self._save)
-        row.add_widget(save)
-        test = Button(text="TEST + COPY")
-        test.bind(on_release=self._test)
-        row.add_widget(test)
-        content.add_widget(row)
+        model_row = BoxLayout(spacing=dp(7), size_hint_y=None, height=dp(44))
+        load_models_button = Button(text="LOAD MODELS")
+        load_models_button.bind(on_release=self._load_models)
+        model_row.add_widget(load_models_button)
+        save_button = Button(text="SAVE CELL")
+        save_button.bind(on_release=self._save)
+        model_row.add_widget(save_button)
+        self.content_box.add_widget(model_row)
 
-        close = Button(text="CLOSE", size_hint_y=None, height=dp(46))
-        close.bind(on_release=self.dismiss)
-        content.add_widget(close)
+        test_row = BoxLayout(spacing=dp(7), size_hint_y=None, height=dp(48))
+        test_one_button = Button(text="TEST THIS CELL")
+        test_one_button.bind(on_release=self._test_one)
+        test_row.add_widget(test_one_button)
+        test_all_button = Button(text="TEST ALL + COPY REPORT")
+        test_all_button.bind(on_release=self._test_all)
+        test_row.add_widget(test_all_button)
+        self.content_box.add_widget(test_row)
 
+        close_button = Button(text="CLOSE", size_hint_y=None, height=dp(44))
+        close_button.bind(on_release=self.dismiss)
+        self.content_box.add_widget(close_button)
+
+        scroll = ScrollView(do_scroll_x=False)
+        scroll.add_widget(self.content_box)
         super().__init__(
-            title="MODEL CONNECTION",
-            content=content,
-            size_hint=(0.94, 0.86),
-            auto_dismiss=True,
+            title="CENTRAL ROUTER",
+            content=scroll,
+            size_hint=(0.96, 0.92),
+            auto_dismiss=False,
             **kwargs,
         )
+        self._load_route_fields()
+        self._refresh_saved_routes()
 
-    def _report(self, event: str) -> None:
+    @staticmethod
+    def _route_from_participant(participant_name: str) -> str:
+        mapping = {
+            "Owner": "route_owner",
+            "Participant 1": "route_1",
+            "Participant 2": "route_2",
+            "Participant 3": "route_3",
+        }
+        return mapping.get(participant_name, "route_owner")
+
+    def _report(self, event: str, **data: Any) -> None:
         if self.on_report is not None:
-            self.on_report(event)
+            try:
+                self.on_report(event, **data)
+            except TypeError:
+                self.on_report(event)
 
     def _provider_id(self) -> str:
         if self.provider.text == "custom":
             return self.custom_provider.text.strip().lower()
         return self.provider.text.strip().lower()
 
+    def _route_selected(self, _spinner: Spinner, label: str) -> None:
+        selected = LABEL_ROUTES.get(label)
+        if selected and selected != self.route_id:
+            self.route_id = selected
+            self._load_route_fields()
+
+    def _load_route_fields(self) -> None:
+        self._loading = True
+        config = load_config(self.user_data_dir, route_id=self.route_id)
+        provider = config.get("provider", "") or "openai"
+        self.provider.text = provider if provider in PROVIDERS else "custom"
+        self.custom_provider.text = provider if provider not in PROVIDERS else ""
+        self.model.text = config.get("model", "")
+        self.model_picker.text = config.get("model", "") or "Load or select model"
+        self.endpoint.text = config.get("endpoint", "")
+        self.api_key.text = config.get("api_key", "")
+        self._loading = False
+        self._report("router_cell_loaded", route_id=self.route_id,
+                     provider=config.get("provider", ""), model=config.get("model", ""),
+                     configured=bool(config.get("api_key") and config.get("model")))
+
+    def _refresh_saved_routes(self) -> None:
+        routes = list_routes(self.user_data_dir)
+        if not routes:
+            self.saved_routes.text = "Saved connections: none yet"
+            return
+        self.saved_routes.text = "Saved connections:\n" + "\n".join(
+            f"{item['route_id']} — {item['provider']} / {item['model']}"
+            for item in routes
+        )
+
     def _provider_changed(self, *_: Any) -> None:
-        self._report("settings_provider_changed")
+        if self._loading:
+            return
         defaults = {
-            "openai": "https://api.openai.com/v1/responses",
+            "openai": "https://api.openai.com/v1",
             "gemini": "https://generativelanguage.googleapis.com/v1beta",
             "groq": "https://api.groq.com/openai/v1",
             "openrouter": "https://openrouter.ai/api/v1",
         }
-        provider = self._provider_id()
-        self.endpoint.text = defaults.get(provider, "")
+        self.endpoint.text = defaults.get(self._provider_id(), "")
         self.model_picker.values = ()
-        self.model_picker.text = "Select or load models"
+        self.model_picker.text = "Load or select model"
         self.model.text = ""
-        if self.api_key.text.strip():
-            self._schedule_model_load()
-
-    def _custom_provider_changed(self, *_: Any) -> None:
-        if self.provider.text == "custom" and self.api_key.text.strip():
-            self._schedule_model_load()
-
-    def _endpoint_changed(self, *_: Any) -> None:
-        if self.api_key.text.strip():
-            self._schedule_model_load()
 
     def _model_selected(self, _spinner: Spinner, value: str) -> None:
-        if value and value != "Select or load models":
+        if value and value != "Load or select model":
             self.model.text = value
 
-    def _model_text_changed(self, _widget: TextInput, value: str) -> None:
-        if value and value in self.model_picker.values and self.model_picker.text != value:
-            self.model_picker.text = value
-
-    def _api_key_changed(self, *_: Any) -> None:
-        self._schedule_model_load()
-
-    def _schedule_model_load(self) -> None:
-        from kivy.clock import Clock
-        if getattr(self, "_model_load_event", None) is not None:
-            self._model_load_event.cancel()
-        if not self.api_key.text.strip():
-            return
-        self.status.text = "API key changed; checking available models..."
-        self._model_load_event = Clock.schedule_once(
-            lambda _dt: self._load_models(), 1.2
-        )
-
     def _load_models(self, *_: Any) -> None:
-        from threading import Thread
-        from kivy.clock import Clock
-        provider = self._provider_id()
-        key = self.api_key.text.strip()
-        endpoint = self.endpoint.text.strip()
+        provider, key, endpoint = self._provider_id(), self.api_key.text.strip(), self.endpoint.text.strip()
         if not provider or not key:
             self.status.text = "Select a provider and enter an API key first."
             return
-        self.load_models_button.disabled = True
-        self.status.text = "Loading models for this API key..."
-        self._report("settings_model_list_request_started")
+        self.status.text = "Loading model list from provider..."
+        self._report("router_model_list_started", route_id=self.route_id, provider=provider)
 
         def worker() -> None:
             try:
-                from llm_api import fetch_models
                 models = fetch_models(provider, key, endpoint)
-                message = f"Loaded {len(models)} models."
+                error = ""
             except Exception as exc:
                 models = []
-                message = f"Model list failed: {type(exc).__name__}: {exc}"
+                error = f"{type(exc).__name__}: {exc}"
 
             def finish(_dt: float) -> None:
-                self.load_models_button.disabled = False
                 if models:
                     self.model_picker.values = tuple(models)
-                    current = self.model.text.strip()
-                    if current in models:
-                        self.model_picker.text = current
+                    if self.model.text.strip() in models:
+                        self.model_picker.text = self.model.text.strip()
                     else:
                         self.model_picker.text = models[0]
-                        if not current:
+                        if not self.model.text.strip():
                             self.model.text = models[0]
-                    self.status.text = message
-                    self._report("settings_model_list_loaded")
+                    self.status.text = f"Loaded {len(models)} models for {self.route_id}."
+                    self._report("router_model_list_loaded", route_id=self.route_id,
+                                 provider=provider, count=len(models), models=models)
                 else:
-                    self.status.text = message
-                    self._report("settings_model_list_failed")
+                    self.status.text = f"Model list failed: {error or 'no models returned'}"
+                    self._report("router_model_list_failed", route_id=self.route_id,
+                                 provider=provider, error=error)
             Clock.schedule_once(finish, 0)
 
-        Thread(target=worker, name="yj64-model-list", daemon=True).start()
+        Thread(target=worker, name="yj64-router-model-list", daemon=True).start()
 
     def _save(self, *_: Any) -> None:
-        self._report("settings_save_started")
+        provider = self._provider_id()
+        if not provider or not self.api_key.text.strip() or not self.model.text.strip():
+            self.status.text = "Provider, API key, and model are required."
+            return
+        self._report("router_cell_save_started", route_id=self.route_id, provider=provider, model=self.model.text.strip())
         save_config(
             self.user_data_dir,
             {
-                "provider": self._provider_id(),
+                "provider": provider,
                 "model": self.model.text.strip(),
                 "endpoint": self.endpoint.text.strip(),
-                "api_key": self.api_key.text,
+                "api_key": self.api_key.text.strip(),
             },
-            participant_name=self.participant_name,
+            route_id=self.route_id,
         )
-        self.status.text = "Settings saved."
-    
-    def _test(self, *_: Any) -> None:
-        self._report("settings_test_started")
-        self._save()
-        if self.on_test is not None:
-            self.on_test()
-        else:
-            try:
-                result = test_llm_api(
-                    self.user_data_dir,
-                    participant_name=self.participant_name,
-                )
-                self.status.text = result["result"]
-            except Exception as exc:
-                self.status.text = f"FAILED: {type(exc).__name__}: {exc}"
+        self.status.text = f"Saved central router cell: {self.route_id}"
+        self._report("router_cell_saved", route_id=self.route_id, provider=provider, model=self.model.text.strip())
+        self._refresh_saved_routes()
 
+    def _test_one(self, *_: Any) -> None:
+        self._save()
+        self.status.text = f"Testing text generation through {self.route_id}..."
+
+        def worker() -> None:
+            lines = [f"YJ-64 ROUTER TEST — {self.route_id}"]
+            try:
+                result = generate_test_response(
+                    self.user_data_dir, route_id=self.route_id,
+                    report=lambda event, **data: self._report(event, **data),
+                )
+                lines.extend([
+                    "Result: SUCCESS", f"Provider: {result['provider']}",
+                    f"Model: {result['model']}", f"Response: {result['response']}",
+                ])
+            except Exception as exc:
+                lines.extend(["Result: FAILED", f"Error: {type(exc).__name__}: {exc}"])
+            report_text = "\n".join(lines)
+
+            def finish(_dt: float) -> None:
+                self.status.text = report_text
+                if self.on_copy is not None:
+                    self.on_copy(report_text)
+            Clock.schedule_once(finish, 0)
+
+        Thread(target=worker, name="yj64-router-test-one", daemon=True).start()
+
+    def _test_all(self, *_: Any) -> None:
+        self._save()
+        self.status.text = "Testing all saved router cells. This may take a while..."
+
+        def worker() -> None:
+            try:
+                result = test_all_routes(
+                    self.user_data_dir,
+                    report=lambda event, **data: self._report(event, **data),
+                )
+                report_text = result["report"]
+            except Exception as exc:
+                report_text = f"YJ-64 CENTRAL ROUTER TEST\nFAILED: {type(exc).__name__}: {exc}"
+                self._report("router_all_test_failed", error_type=type(exc).__name__, error=str(exc))
+
+            def finish(_dt: float) -> None:
+                self.status.text = report_text
+                if self.on_copy is not None:
+                    self.on_copy(report_text)
+            Clock.schedule_once(finish, 0)
+
+        Thread(target=worker, name="yj64-router-test-all", daemon=True).start()
 END ALLOWED
 
 
 
 ============================================================
+🟡 ИЗМЕНЕНИЕ: MESSAGE DISTRIBUTOR — очередь и маркеры маршрутов.
+FILE: message_distributor.py BEGIN ALLOWED
+"""Message distribution layer for YJ-64.
+
+This module knows participant order and route markers only. It does not know
+provider names, API endpoints, credentials, or provider-specific request formats.
+"""
+from __future__ import annotations
+
+import uuid
+from pathlib import Path
+from typing import Any, Callable
+
+PARTICIPANT_ROUTES = {
+    "Owner": "route_owner",
+    "Participant 1": "route_1",
+    "Participant 2": "route_2",
+    "Participant 3": "route_3",
+}
+
+
+class MessageDistributor:
+    """Tracks dialogue order, current mode marker, and optional private target."""
+
+    def __init__(self) -> None:
+        self.mode = "text"
+        self._next_index = 0
+        self._private_participant: str | None = None
+
+    def route_for_participant(self, participant_name: str) -> str:
+        try:
+            return PARTICIPANT_ROUTES[participant_name]
+        except KeyError as exc:
+            raise ValueError(
+                f"No route marker is assigned to participant {participant_name!r}"
+            ) from exc
+
+    def set_mode(self, mode: str) -> str:
+        selected = str(mode or "text").strip().lower()
+        if selected not in {"text", "agent"}:
+            raise ValueError(f"Unknown message mode marker: {mode}")
+        self.mode = selected
+        return self.mode
+
+    def toggle_mode(self) -> str:
+        self.mode = "agent" if self.mode == "text" else "text"
+        return self.mode
+
+    def set_private_participant(self, participant_name: str | None) -> None:
+        self._private_participant = participant_name
+
+    @property
+    def active_participant(self) -> str | None:
+        return self._private_participant
+
+    def next_participant(self, participants: list[str]) -> str:
+        if not participants:
+            raise ValueError("Cannot select the next participant from an empty queue")
+        participant = participants[self._next_index % len(participants)]
+        self._next_index = (self._next_index + 1) % len(participants)
+        return participant
+
+    def reset_queue(self) -> None:
+        self._next_index = 0
+
+    def dispatch_message(
+        self,
+        user_data_dir: str | Path,
+        participant_name: str,
+        message: str,
+        report: Callable[..., None] | None = None,
+        history: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        route_id = self.route_for_participant(participant_name)
+        operation_id = uuid.uuid4().hex
+        if report is not None:
+            report(
+                "distributor_request_marked",
+                operation_id=operation_id,
+                participant=participant_name,
+                route_id=route_id,
+                mode=self.mode,
+                history_count=len(history or []),
+            )
+        # Provider-specific routing, credentials, HTTP, and response text
+        # extraction all remain inside the central llm_api router.
+        from llm_api import generate_response
+
+        result = generate_response(
+            user_data_dir,
+            message,
+            report=report,
+            route_id=route_id,
+            mode=self.mode,
+            history=history,
+            operation_id=operation_id,
+        )
+        if report is not None:
+            report(
+                "distributor_response_returned",
+                operation_id=operation_id,
+                participant=participant_name,
+                route_id=route_id,
+                mode=self.mode,
+                response_length=len(result.get("response", "")),
+            )
+        return result
+END ALLOWED
+
 🟡 ИЗМЕНЕНИЕ: GUARD VERIFIER — блокировка Build при несовпадении.
 FILE: tools/verify_guard.py BEGIN ALLOWED
 #!/usr/bin/env python3
@@ -2387,8 +2253,11 @@ if __name__ == "__main__":
 
 END ALLOWED
 ============================================================ КОНЕЦ ОПЕРАЦИОННОГО СТОЛА
-EXPECTED-GIT-BLOB-SHA:main.py=4c6a5bb6fb373112762b4e7cbef935c9666e770c
-EXPECTED-GIT-BLOB-SHA:llm_api.py=bfe8820644f6bf7dfa0e94554fb0b59544a86a94
-EXPECTED-GIT-BLOB-SHA:llm_settings.py=611e5cfb60293ee3ef80bf0713f697da1e48158c
+EXPECTED-GIT-BLOB-SHA:main.py=bca19bb7a058372ed947fa9f770a950838827b8a
+EXPECTED-GIT-BLOB-SHA:llm_api.py=b849394a4d1593a88a2005263854c84011f05826
+EXPECTED-GIT-BLOB-SHA:llm_settings.py=38c1763a37a1c85216a898122c2ec5dbf924cceb
 EXPECTED-GIT-BLOB-SHA:android_src/MonitorActivity.java=3ba31910e912241cab181efc57b71cd929262e03
 EXPECTED-GIT-BLOB-SHA:tools/verify_guard.py=887269e44f5fbffc093de87d02e7bf960f3e138b
+EXPECTED-GIT-BLOB-SHA:message_distributor.py=1ec6347b11cb06aebc58e6d4f7cacd9953d01390
+EXPECTED-GIT-BLOB-SHA:.github/workflows/ci.yml=f000bfc794af06b041a4c5cd6d18651489068f83
+EXPECTED-GIT-BLOB-SHA:.github/workflows/android-apk.yml=b58ef86c980e9da08bb67fffb6248c9d2f918b09
