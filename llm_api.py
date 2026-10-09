@@ -299,7 +299,11 @@ def _gemini_contents(
             "role": "model" if role in {"assistant", "model"} else "user",
             "parts": [{"text": content}],
         })
-    if not contents or str((history or [{}])[-1].get("content") or "") != prompt:
+    last_content = str((history or [{}])[-1].get("content") or "")
+    prompt_already_in_history = (
+        last_content == prompt or last_content.endswith(": " + prompt)
+    )
+    if not contents or not prompt_already_in_history:
         contents.append({"role": "user", "parts": [{"text": prompt}]})
     return contents
 
