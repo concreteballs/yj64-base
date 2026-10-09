@@ -18,6 +18,8 @@ on:
       - 'main.py'
       - 'llm_api.py'
       - 'llm_settings.py'
+      - 'message_distributor.py'
+      - '.github/workflows/ci.yml'
       - 'tools/verify_guard.py'
   workflow_dispatch:
 
