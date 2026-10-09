@@ -155,7 +155,7 @@ class YJ64BaseApp(App):
             orientation="vertical",
             spacing=8,
             size_hint_y=None,
-            height=280,
+            height=340,
         )
         participant_column.add_widget(Label(
             text="PARTICIPANTS",
@@ -443,6 +443,7 @@ class YJ64BaseApp(App):
         popup.open()
 
     def _open_group_dialogue(self, *_: Any) -> None:
+        self.message_distributor.set_private_participant(None)
         participants = [
             name
             for name in ("Participant 1", "Participant 2", "Participant 3")
@@ -1431,7 +1432,11 @@ def _gemini_contents(
             "role": "model" if role in {"assistant", "model"} else "user",
             "parts": [{"text": content}],
         })
-    if not contents or str((history or [{}])[-1].get("content") or "") != prompt:
+    last_content = str((history or [{}])[-1].get("content") or "")
+    prompt_already_in_history = (
+        last_content == prompt or last_content.endswith(": " + prompt)
+    )
+    if not contents or not prompt_already_in_history:
         contents.append({"role": "user", "parts": [{"text": prompt}]})
     return contents
 
@@ -2149,13 +2154,14 @@ class MessageDistributor:
     ) -> dict[str, Any]:
         route_id = self.route_for_participant(participant_name)
         operation_id = uuid.uuid4().hex
+        selected_mode = self.mode
         if report is not None:
             report(
                 "distributor_request_marked",
                 operation_id=operation_id,
                 participant=participant_name,
                 route_id=route_id,
-                mode=self.mode,
+                mode=selected_mode,
                 history_count=len(history or []),
             )
         # Provider-specific routing, credentials, HTTP, and response text
@@ -2167,7 +2173,7 @@ class MessageDistributor:
             message,
             report=report,
             route_id=route_id,
-            mode=self.mode,
+            mode=selected_mode,
             history=history,
             operation_id=operation_id,
         )
@@ -2177,7 +2183,7 @@ class MessageDistributor:
                 operation_id=operation_id,
                 participant=participant_name,
                 route_id=route_id,
-                mode=self.mode,
+                mode=selected_mode,
                 response_length=len(result.get("response", "")),
             )
         return result
@@ -2253,11 +2259,11 @@ if __name__ == "__main__":
 
 END ALLOWED
 ============================================================ КОНЕЦ ОПЕРАЦИОННОГО СТОЛА
-EXPECTED-GIT-BLOB-SHA:main.py=bca19bb7a058372ed947fa9f770a950838827b8a
-EXPECTED-GIT-BLOB-SHA:llm_api.py=b849394a4d1593a88a2005263854c84011f05826
+EXPECTED-GIT-BLOB-SHA:main.py=39e29c8f3a2f65117516c26294fa8d92e094993b
+EXPECTED-GIT-BLOB-SHA:llm_api.py=437a2e2ca97b34e1328241fb6bda5dd57223343f
 EXPECTED-GIT-BLOB-SHA:llm_settings.py=38c1763a37a1c85216a898122c2ec5dbf924cceb
 EXPECTED-GIT-BLOB-SHA:android_src/MonitorActivity.java=3ba31910e912241cab181efc57b71cd929262e03
 EXPECTED-GIT-BLOB-SHA:tools/verify_guard.py=887269e44f5fbffc093de87d02e7bf960f3e138b
-EXPECTED-GIT-BLOB-SHA:message_distributor.py=1ec6347b11cb06aebc58e6d4f7cacd9953d01390
+EXPECTED-GIT-BLOB-SHA:message_distributor.py=4aa8c297edea27a37b20a178d5a932be4db5e626
 EXPECTED-GIT-BLOB-SHA:.github/workflows/ci.yml=f000bfc794af06b041a4c5cd6d18651489068f83
 EXPECTED-GIT-BLOB-SHA:.github/workflows/android-apk.yml=b58ef86c980e9da08bb67fffb6248c9d2f918b09
