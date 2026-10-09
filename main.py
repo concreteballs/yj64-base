@@ -132,7 +132,7 @@ class YJ64BaseApp(App):
             orientation="vertical",
             spacing=8,
             size_hint_y=None,
-            height=280,
+            height=340,
         )
         participant_column.add_widget(Label(
             text="PARTICIPANTS",
@@ -420,6 +420,7 @@ class YJ64BaseApp(App):
         popup.open()
 
     def _open_group_dialogue(self, *_: Any) -> None:
+        self.message_distributor.set_private_participant(None)
         participants = [
             name
             for name in ("Participant 1", "Participant 2", "Participant 3")
