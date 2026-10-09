@@ -8,6 +8,8 @@ on:
       - 'main.py'
       - 'llm_api.py'
       - 'llm_settings.py'
+      - 'message_distributor.py'
+      - '.github/workflows/ci.yml'
       - 'tools/verify_guard.py'
   pull_request:
     branches: ['monitor-api-2']
@@ -33,4 +35,4 @@ jobs:
           python3 tools/verify_guard.py
       - name: Compile protected Python modules
         run: |
-          python3 -m py_compile main.py llm_api.py llm_settings.py tools/verify_guard.py
+          python3 -m py_compile main.py llm_api.py llm_settings.py message_distributor.py tools/verify_guard.py
