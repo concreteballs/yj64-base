@@ -71,13 +71,14 @@ class MessageDistributor:
     ) -> dict[str, Any]:
         route_id = self.route_for_participant(participant_name)
         operation_id = uuid.uuid4().hex
+        selected_mode = self.mode
         if report is not None:
             report(
                 "distributor_request_marked",
                 operation_id=operation_id,
                 participant=participant_name,
                 route_id=route_id,
-                mode=self.mode,
+                mode=selected_mode,
                 history_count=len(history or []),
             )
         # Provider-specific routing, credentials, HTTP, and response text
@@ -89,7 +90,7 @@ class MessageDistributor:
             message,
             report=report,
             route_id=route_id,
-            mode=self.mode,
+            mode=selected_mode,
             history=history,
             operation_id=operation_id,
         )
@@ -99,7 +100,7 @@ class MessageDistributor:
                 operation_id=operation_id,
                 participant=participant_name,
                 route_id=route_id,
-                mode=self.mode,
+                mode=selected_mode,
                 response_length=len(result.get("response", "")),
             )
         return result
