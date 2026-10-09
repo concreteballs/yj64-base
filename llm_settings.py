@@ -1,273 +1,350 @@
-"""YJ-64 LLM connection settings UI.
-
-Keeps provider credentials in the app-private files directory and delegates
-network access to llm_api.py.
-"""
+"""Central LLM router settings UI for YJ-64."""
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Thread
 from typing import Any, Callable
 
+from kivy.clock import Clock
 from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.popup import Popup
+from kivy.uix.scrollview import ScrollView
 from kivy.uix.spinner import Spinner
 from kivy.uix.textinput import TextInput
 
-from llm_api import load_config, save_config, test_llm_api
+from llm_api import (
+    fetch_models,
+    generate_test_response,
+    list_routes,
+    load_config,
+    save_config,
+    test_all_routes,
+    test_llm_api,
+)
+
+ROUTE_LABELS = {
+    "route_owner": "Owner / route_owner",
+    "route_1": "Participant 1 / route_1",
+    "route_2": "Participant 2 / route_2",
+    "route_3": "Participant 3 / route_3",
+}
+LABEL_ROUTES = {label: route for route, label in ROUTE_LABELS.items()}
+PROVIDERS = ("openai", "gemini", "groq", "openrouter", "custom")
 
 
 class LLMSettingsPopup(Popup):
+    """A single central router editor; participant screens only select a route cell."""
+
     def __init__(
         self,
         user_data_dir: str | Path,
         on_test: Callable[[], None] | None = None,
         participant_name: str = "Owner",
-        on_report: Callable[[str], None] | None = None,
+        route_id: str | None = None,
+        on_report: Callable[..., None] | None = None,
+        on_copy: Callable[[str], None] | None = None,
         **kwargs: Any,
     ) -> None:
         self.user_data_dir = Path(user_data_dir)
-        self.participant_name = participant_name
         self.on_test = on_test
         self.on_report = on_report
-        self._report("settings_init_started")
-        config = load_config(
-            self.user_data_dir,
-            participant_name=self.participant_name,
-        )
-        self._report("settings_config_loaded")
+        self.on_copy = on_copy
+        self.route_id = route_id or self._route_from_participant(participant_name)
+        self._loading = False
+        self._model_load_event = None
+        self._report("router_settings_opened", route_id=self.route_id)
 
-        content = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(7))
-        content.add_widget(Label(
-            text=f"{self.participant_name} / LLM MODEL / API CONNECTION",
-            bold=True,
+        self.content_box = BoxLayout(
+            orientation="vertical", padding=dp(10), spacing=dp(7),
             size_hint_y=None,
-            height=dp(36),
+        )
+        self.content_box.bind(minimum_height=self.content_box.setter("height"))
+        self.content_box.add_widget(Label(
+            text="CENTRAL LLM ROUTER",
+            bold=True, size_hint_y=None, height=dp(34),
+        ))
+        self.content_box.add_widget(Label(
+            text="API keys and model settings are saved in the router, not in participants.",
+            size_hint_y=None, height=dp(42),
         ))
 
-        content.add_widget(Label(text="Provider", size_hint_y=None, height=dp(24)))
-        known_providers = ("openai", "gemini", "groq", "openrouter", "custom")
-        current_provider = (config.get("provider") or "openai").strip().lower()
+        self.route_picker = Spinner(
+            text=ROUTE_LABELS.get(self.route_id, self.route_id),
+            values=tuple(ROUTE_LABELS.values()),
+            size_hint_y=None, height=dp(44),
+        )
+        self.route_picker.bind(text=self._route_selected)
+        self.content_box.add_widget(Label(
+            text="Router cell / participant route",
+            size_hint_y=None, height=dp(22),
+        ))
+        self.content_box.add_widget(self.route_picker)
+
+        self.saved_routes = Label(
+            text="", size_hint_y=None, height=dp(62),
+            halign="left", valign="middle",
+        )
+        self.saved_routes.bind(size=lambda widget, value: setattr(widget, "text_size", value))
+        self.content_box.add_widget(self.saved_routes)
+
         self.provider = Spinner(
-            text=current_provider if current_provider in known_providers else "custom",
-            values=known_providers,
-            size_hint_y=None,
-            height=dp(42),
+            text="openai", values=PROVIDERS,
+            size_hint_y=None, height=dp(42),
         )
         self.provider.bind(text=self._provider_changed)
-        content.add_widget(self.provider)
+        self.content_box.add_widget(Label(text="Provider", size_hint_y=None, height=dp(22)))
+        self.content_box.add_widget(self.provider)
 
-        content.add_widget(Label(text="Custom provider name (for Custom only)", size_hint_y=None, height=dp(24)))
         self.custom_provider = TextInput(
-            text=config.get("provider", "") if current_provider not in known_providers else "",
-            hint_text="Provider ID, e.g. my-provider",
-            multiline=False,
-            size_hint_y=None,
-            height=dp(42),
+            hint_text="Custom provider ID (only for custom)",
+            multiline=False, size_hint_y=None, height=dp(42),
         )
-        self.custom_provider.bind(text=self._custom_provider_changed)
-        content.add_widget(self.custom_provider)
+        self.content_box.add_widget(self.custom_provider)
 
-        content.add_widget(Label(text="Model", size_hint_y=None, height=dp(24)))
         self.model_picker = Spinner(
-            text=config.get("model", "") or "Select or load models",
-            values=(),
-            size_hint_y=None,
-            height=dp(42),
+            text="Load or select model", values=(),
+            size_hint_y=None, height=dp(42),
         )
         self.model_picker.bind(text=self._model_selected)
-        content.add_widget(self.model_picker)
+        self.content_box.add_widget(Label(text="Model", size_hint_y=None, height=dp(22)))
+        self.content_box.add_widget(self.model_picker)
         self.model = TextInput(
-            text=config.get("model", ""),
-            hint_text="Or enter model ID manually",
-            multiline=False,
-            size_hint_y=None,
-            height=dp(42),
+            hint_text="Model ID", multiline=False,
+            size_hint_y=None, height=dp(42),
         )
-        self.model.bind(text=self._model_text_changed)
-        content.add_widget(self.model)
+        self.content_box.add_widget(self.model)
 
-        content.add_widget(Label(text="API endpoint", size_hint_y=None, height=dp(24)))
         self.endpoint = TextInput(
-            text=config.get("endpoint", ""),
-            hint_text="Leave empty for provider default",
-            multiline=False,
-            size_hint_y=None,
-            height=dp(42),
+            hint_text="API endpoint (leave blank for provider default)",
+            multiline=False, size_hint_y=None, height=dp(42),
         )
-        self.endpoint.bind(text=self._endpoint_changed)
-        content.add_widget(self.endpoint)
+        self.content_box.add_widget(Label(text="API endpoint", size_hint_y=None, height=dp(22)))
+        self.content_box.add_widget(self.endpoint)
 
-        content.add_widget(Label(text="API key", size_hint_y=None, height=dp(24)))
         self.api_key = TextInput(
-            text=config.get("api_key", ""),
-            hint_text="Enter your API key",
-            password=True,
-            multiline=False,
-            size_hint_y=None,
-            height=dp(42),
+            hint_text="API key for this router cell", password=True,
+            multiline=False, size_hint_y=None, height=dp(42),
         )
-        self.api_key.bind(text=self._api_key_changed)
-        content.add_widget(self.api_key)
-
-        model_row = BoxLayout(spacing=dp(7), size_hint_y=None, height=dp(42))
-        self.load_models_button = Button(text="LOAD MODELS")
-        self.load_models_button.bind(on_release=self._load_models)
-        model_row.add_widget(self.load_models_button)
-        content.add_widget(model_row)
+        self.content_box.add_widget(Label(text="API key (stored by the central router)", size_hint_y=None, height=dp(22)))
+        self.content_box.add_widget(self.api_key)
 
         self.status = Label(
-            text="Enter an API key to load available models. Key stays in app-private storage after SAVE.",
-            size_hint_y=None,
-            height=dp(54),
+            text="Choose a router cell, enter its connection details, then SAVE.",
+            size_hint_y=None, height=dp(56), halign="left", valign="middle",
         )
-        content.add_widget(self.status)
+        self.status.bind(size=lambda widget, value: setattr(widget, "text_size", value))
+        self.content_box.add_widget(self.status)
 
-        row = BoxLayout(spacing=dp(7), size_hint_y=None, height=dp(46))
-        save = Button(text="SAVE")
-        save.bind(on_release=self._save)
-        row.add_widget(save)
-        test = Button(text="TEST + COPY")
-        test.bind(on_release=self._test)
-        row.add_widget(test)
-        content.add_widget(row)
+        model_row = BoxLayout(spacing=dp(7), size_hint_y=None, height=dp(44))
+        load_models_button = Button(text="LOAD MODELS")
+        load_models_button.bind(on_release=self._load_models)
+        model_row.add_widget(load_models_button)
+        save_button = Button(text="SAVE CELL")
+        save_button.bind(on_release=self._save)
+        model_row.add_widget(save_button)
+        self.content_box.add_widget(model_row)
 
-        close = Button(text="CLOSE", size_hint_y=None, height=dp(46))
-        close.bind(on_release=self.dismiss)
-        content.add_widget(close)
+        test_row = BoxLayout(spacing=dp(7), size_hint_y=None, height=dp(48))
+        test_one_button = Button(text="TEST THIS CELL")
+        test_one_button.bind(on_release=self._test_one)
+        test_row.add_widget(test_one_button)
+        test_all_button = Button(text="TEST ALL + COPY REPORT")
+        test_all_button.bind(on_release=self._test_all)
+        test_row.add_widget(test_all_button)
+        self.content_box.add_widget(test_row)
 
+        close_button = Button(text="CLOSE", size_hint_y=None, height=dp(44))
+        close_button.bind(on_release=self.dismiss)
+        self.content_box.add_widget(close_button)
+
+        scroll = ScrollView(do_scroll_x=False)
+        scroll.add_widget(self.content_box)
         super().__init__(
-            title="MODEL CONNECTION",
-            content=content,
-            size_hint=(0.94, 0.86),
-            auto_dismiss=True,
+            title="CENTRAL ROUTER",
+            content=scroll,
+            size_hint=(0.96, 0.92),
+            auto_dismiss=False,
             **kwargs,
         )
+        self._load_route_fields()
+        self._refresh_saved_routes()
 
-    def _report(self, event: str) -> None:
+    @staticmethod
+    def _route_from_participant(participant_name: str) -> str:
+        mapping = {
+            "Owner": "route_owner",
+            "Participant 1": "route_1",
+            "Participant 2": "route_2",
+            "Participant 3": "route_3",
+        }
+        return mapping.get(participant_name, "route_owner")
+
+    def _report(self, event: str, **data: Any) -> None:
         if self.on_report is not None:
-            self.on_report(event)
+            try:
+                self.on_report(event, **data)
+            except TypeError:
+                self.on_report(event)
 
     def _provider_id(self) -> str:
         if self.provider.text == "custom":
             return self.custom_provider.text.strip().lower()
         return self.provider.text.strip().lower()
 
+    def _route_selected(self, _spinner: Spinner, label: str) -> None:
+        selected = LABEL_ROUTES.get(label)
+        if selected and selected != self.route_id:
+            self.route_id = selected
+            self._load_route_fields()
+
+    def _load_route_fields(self) -> None:
+        self._loading = True
+        config = load_config(self.user_data_dir, route_id=self.route_id)
+        provider = config.get("provider", "") or "openai"
+        self.provider.text = provider if provider in PROVIDERS else "custom"
+        self.custom_provider.text = provider if provider not in PROVIDERS else ""
+        self.model.text = config.get("model", "")
+        self.model_picker.text = config.get("model", "") or "Load or select model"
+        self.endpoint.text = config.get("endpoint", "")
+        self.api_key.text = config.get("api_key", "")
+        self._loading = False
+        self._report("router_cell_loaded", route_id=self.route_id,
+                     provider=config.get("provider", ""), model=config.get("model", ""),
+                     configured=bool(config.get("api_key") and config.get("model")))
+
+    def _refresh_saved_routes(self) -> None:
+        routes = list_routes(self.user_data_dir)
+        if not routes:
+            self.saved_routes.text = "Saved connections: none yet"
+            return
+        self.saved_routes.text = "Saved connections:\n" + "\n".join(
+            f"{item['route_id']} — {item['provider']} / {item['model']}"
+            for item in routes
+        )
+
     def _provider_changed(self, *_: Any) -> None:
-        self._report("settings_provider_changed")
+        if self._loading:
+            return
         defaults = {
-            "openai": "https://api.openai.com/v1/responses",
+            "openai": "https://api.openai.com/v1",
             "gemini": "https://generativelanguage.googleapis.com/v1beta",
             "groq": "https://api.groq.com/openai/v1",
             "openrouter": "https://openrouter.ai/api/v1",
         }
-        provider = self._provider_id()
-        self.endpoint.text = defaults.get(provider, "")
+        self.endpoint.text = defaults.get(self._provider_id(), "")
         self.model_picker.values = ()
-        self.model_picker.text = "Select or load models"
+        self.model_picker.text = "Load or select model"
         self.model.text = ""
-        if self.api_key.text.strip():
-            self._schedule_model_load()
-
-    def _custom_provider_changed(self, *_: Any) -> None:
-        if self.provider.text == "custom" and self.api_key.text.strip():
-            self._schedule_model_load()
-
-    def _endpoint_changed(self, *_: Any) -> None:
-        if self.api_key.text.strip():
-            self._schedule_model_load()
 
     def _model_selected(self, _spinner: Spinner, value: str) -> None:
-        if value and value != "Select or load models":
+        if value and value != "Load or select model":
             self.model.text = value
 
-    def _model_text_changed(self, _widget: TextInput, value: str) -> None:
-        if value and value in self.model_picker.values and self.model_picker.text != value:
-            self.model_picker.text = value
-
-    def _api_key_changed(self, *_: Any) -> None:
-        self._schedule_model_load()
-
-    def _schedule_model_load(self) -> None:
-        from kivy.clock import Clock
-        if getattr(self, "_model_load_event", None) is not None:
-            self._model_load_event.cancel()
-        if not self.api_key.text.strip():
-            return
-        self.status.text = "API key changed; checking available models..."
-        self._model_load_event = Clock.schedule_once(
-            lambda _dt: self._load_models(), 1.2
-        )
-
     def _load_models(self, *_: Any) -> None:
-        from threading import Thread
-        from kivy.clock import Clock
-        provider = self._provider_id()
-        key = self.api_key.text.strip()
-        endpoint = self.endpoint.text.strip()
+        provider, key, endpoint = self._provider_id(), self.api_key.text.strip(), self.endpoint.text.strip()
         if not provider or not key:
             self.status.text = "Select a provider and enter an API key first."
             return
-        self.load_models_button.disabled = True
-        self.status.text = "Loading models for this API key..."
-        self._report("settings_model_list_request_started")
+        self.status.text = "Loading model list from provider..."
+        self._report("router_model_list_started", route_id=self.route_id, provider=provider)
 
         def worker() -> None:
             try:
-                from llm_api import fetch_models
                 models = fetch_models(provider, key, endpoint)
-                message = f"Loaded {len(models)} models."
+                error = ""
             except Exception as exc:
                 models = []
-                message = f"Model list failed: {type(exc).__name__}: {exc}"
+                error = f"{type(exc).__name__}: {exc}"
 
             def finish(_dt: float) -> None:
-                self.load_models_button.disabled = False
                 if models:
                     self.model_picker.values = tuple(models)
-                    current = self.model.text.strip()
-                    if current in models:
-                        self.model_picker.text = current
+                    if self.model.text.strip() in models:
+                        self.model_picker.text = self.model.text.strip()
                     else:
                         self.model_picker.text = models[0]
-                        if not current:
+                        if not self.model.text.strip():
                             self.model.text = models[0]
-                    self.status.text = message
-                    self._report("settings_model_list_loaded")
+                    self.status.text = f"Loaded {len(models)} models for {self.route_id}."
+                    self._report("router_model_list_loaded", route_id=self.route_id,
+                                 provider=provider, count=len(models), models=models)
                 else:
-                    self.status.text = message
-                    self._report("settings_model_list_failed")
+                    self.status.text = f"Model list failed: {error or 'no models returned'}"
+                    self._report("router_model_list_failed", route_id=self.route_id,
+                                 provider=provider, error=error)
             Clock.schedule_once(finish, 0)
 
-        Thread(target=worker, name="yj64-model-list", daemon=True).start()
+        Thread(target=worker, name="yj64-router-model-list", daemon=True).start()
 
     def _save(self, *_: Any) -> None:
-        self._report("settings_save_started")
+        provider = self._provider_id()
+        if not provider or not self.api_key.text.strip() or not self.model.text.strip():
+            self.status.text = "Provider, API key, and model are required."
+            return
+        self._report("router_cell_save_started", route_id=self.route_id, provider=provider, model=self.model.text.strip())
         save_config(
             self.user_data_dir,
             {
-                "provider": self._provider_id(),
+                "provider": provider,
                 "model": self.model.text.strip(),
                 "endpoint": self.endpoint.text.strip(),
-                "api_key": self.api_key.text,
+                "api_key": self.api_key.text.strip(),
             },
-            participant_name=self.participant_name,
+            route_id=self.route_id,
         )
-        self.status.text = "Settings saved."
-    
-    def _test(self, *_: Any) -> None:
-        self._report("settings_test_started")
+        self.status.text = f"Saved central router cell: {self.route_id}"
+        self._report("router_cell_saved", route_id=self.route_id, provider=provider, model=self.model.text.strip())
+        self._refresh_saved_routes()
+
+    def _test_one(self, *_: Any) -> None:
         self._save()
-        if self.on_test is not None:
-            self.on_test()
-        else:
+        self.status.text = f"Testing text generation through {self.route_id}..."
+
+        def worker() -> None:
+            lines = [f"YJ-64 ROUTER TEST — {self.route_id}"]
             try:
-                result = test_llm_api(
-                    self.user_data_dir,
-                    participant_name=self.participant_name,
+                result = generate_test_response(
+                    self.user_data_dir, route_id=self.route_id,
+                    report=lambda event, **data: self._report(event, **data),
                 )
-                self.status.text = result["result"]
+                lines.extend([
+                    "Result: SUCCESS", f"Provider: {result['provider']}",
+                    f"Model: {result['model']}", f"Response: {result['response']}",
+                ])
             except Exception as exc:
-                self.status.text = f"FAILED: {type(exc).__name__}: {exc}"
+                lines.extend(["Result: FAILED", f"Error: {type(exc).__name__}: {exc}"])
+            report_text = "\n".join(lines)
+
+            def finish(_dt: float) -> None:
+                self.status.text = report_text
+                if self.on_copy is not None:
+                    self.on_copy(report_text)
+            Clock.schedule_once(finish, 0)
+
+        Thread(target=worker, name="yj64-router-test-one", daemon=True).start()
+
+    def _test_all(self, *_: Any) -> None:
+        self._save()
+        self.status.text = "Testing all saved router cells. This may take a while..."
+
+        def worker() -> None:
+            try:
+                result = test_all_routes(
+                    self.user_data_dir,
+                    report=lambda event, **data: self._report(event, **data),
+                )
+                report_text = result["report"]
+            except Exception as exc:
+                report_text = f"YJ-64 CENTRAL ROUTER TEST\nFAILED: {type(exc).__name__}: {exc}"
+                self._report("router_all_test_failed", error_type=type(exc).__name__, error=str(exc))
+
+            def finish(_dt: float) -> None:
+                self.status.text = report_text
+                if self.on_copy is not None:
+                    self.on_copy(report_text)
+            Clock.schedule_once(finish, 0)
+
+        Thread(target=worker, name="yj64-router-test-all", daemon=True).start()
