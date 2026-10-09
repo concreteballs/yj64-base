@@ -49,7 +49,7 @@ jobs:
 
       - name: Validate sources
         run: |
-          python -m py_compile main.py services/internal_monitor.py llm_api.py llm_settings.py
+          python -m py_compile main.py services/internal_monitor.py llm_api.py llm_settings.py message_distributor.py
 
       - name: Clean previous Android build artifacts and logs
         run: |
