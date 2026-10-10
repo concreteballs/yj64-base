@@ -131,6 +131,16 @@ class LLMSettingsPopup(Popup):
         self.content_box.add_widget(Label(text="API key (stored by the central router)", size_hint_y=None, height=dp(22)))
         self.content_box.add_widget(self.api_key)
 
+        self.agent_id = TextInput(
+            hint_text="Agent ID (optional; for AGENT mode)",
+            multiline=False, size_hint_y=None, height=dp(42),
+        )
+        self.content_box.add_widget(Label(
+            text="Agent ID (used when REQUEST MODE is AGENT)",
+            size_hint_y=None, height=dp(22),
+        ))
+        self.content_box.add_widget(self.agent_id)
+
         self.status = Label(
             text="Choose a router cell, enter its connection details, then SAVE.",
             size_hint_y=None, height=dp(56), halign="left", valign="middle",
@@ -210,6 +220,7 @@ class LLMSettingsPopup(Popup):
         self.model_picker.text = config.get("model", "") or "Load or select model"
         self.endpoint.text = config.get("endpoint", "")
         self.api_key.text = config.get("api_key", "")
+        self.agent_id.text = config.get("agent_id", "")
         self._loading = False
         self._report("router_cell_loaded", route_id=self.route_id,
                      provider=config.get("provider", ""), model=config.get("model", ""),
@@ -292,6 +303,7 @@ class LLMSettingsPopup(Popup):
                 "model": self.model.text.strip(),
                 "endpoint": self.endpoint.text.strip(),
                 "api_key": self.api_key.text.strip(),
+                "agent_id": self.agent_id.text.strip(),
             },
             route_id=self.route_id,
         )
