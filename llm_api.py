@@ -131,6 +131,7 @@ def _load_router_data(user_data_dir: str | Path) -> dict[str, Any]:
                 "model": str(legacy.get("model") or ""),
                 "api_key": str(legacy.get("api_key") or ""),
                 "endpoint": str(legacy.get("endpoint") or ""),
+                "agent_id": str(legacy.get("agent_id") or ""),
             }
             migrated_paths.append(legacy_path)
 
@@ -149,6 +150,7 @@ def _load_router_data(user_data_dir: str | Path) -> dict[str, Any]:
                 "model": str(raw.get("model") or ""),
                 "api_key": str(raw.get("api_key") or ""),
                 "endpoint": str(raw.get("endpoint") or ""),
+                "agent_id": str(raw.get("agent_id") or ""),
             }
             next_index += 1
         if routes:
@@ -182,6 +184,7 @@ def list_routes(user_data_dir: str | Path) -> list[dict[str, str]]:
                 "provider": config.get("provider", ""),
                 "model": config.get("model", ""),
                 "endpoint": config.get("endpoint", ""),
+                "agent_id": config.get("agent_id", ""),
             })
     return sorted(result, key=lambda item: item["route_id"])
 
@@ -202,6 +205,7 @@ def load_config(
         "model": str(raw.get("model") or ""),
         "api_key": str(raw.get("api_key") or ""),
         "endpoint": str(raw.get("endpoint") or ""),
+        "agent_id": str(raw.get("agent_id") or ""),
     }
 
 
@@ -234,6 +238,7 @@ def save_config(
         "model": str(config.get("model") or "").strip(),
         "api_key": str(config.get("api_key") or "").strip(),
         "endpoint": str(config.get("endpoint") or "").strip(),
+        "agent_id": str(config.get("agent_id") or "").strip(),
     }
     _write_router_data(user_data_dir, data)
 
@@ -325,6 +330,31 @@ def _extract_gemini_text(data: dict[str, Any]) -> str:
     return "".join(texts).strip()
 
 
+def _extract_agent_text(data: dict[str, Any]) -> str:
+    """Extract assistant text from a Mistral Conversations API response."""
+    outputs = data.get("outputs", [])
+    texts: list[str] = []
+    if isinstance(outputs, list):
+        for item in outputs:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content", "")
+            if isinstance(content, str):
+                if content.strip():
+                    texts.append(content.strip())
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        value = part.get("text")
+                        if value is not None and str(value).strip():
+                            texts.append(str(value).strip())
+            elif isinstance(content, dict):
+                value = content.get("text")
+                if value is not None and str(value).strip():
+                    texts.append(str(value).strip())
+    return "\\n".join(texts).strip()
+
+
 def _extract_openai_text(data: dict[str, Any]) -> str:
     output_text = data.get("output_text")
     if isinstance(output_text, str) and output_text.strip():
@@ -369,33 +399,66 @@ def generate_response(
         operation_id=operation, route_id=selected_route, mode=selected_mode,
         prompt=prompt,
     )
-    if selected_mode != "text":
+    if selected_mode not in {"text", "agent"}:
         _report(
             report, "gateway_mode_rejected",
             operation_id=operation, route_id=selected_route, mode=selected_mode,
-            reason="Only text mode is implemented in this build",
+            reason="Supported modes are text and agent",
         )
-        raise RuntimeError(f"Request mode '{selected_mode}' is not implemented yet")
+        raise RuntimeError(f"Request mode '{selected_mode}' is not supported")
 
     config = load_config(user_data_dir, route_id=selected_route)
     provider = config["provider"].strip().lower()
     model = config["model"].strip()
     key = config["api_key"].strip()
-    if not provider or not key or not model:
+    agent_id = config.get("agent_id", "").strip()
+    mode_configured = bool(
+        provider and key and (
+            (selected_mode == "text" and model)
+            or (selected_mode == "agent" and agent_id)
+        )
+    )
+    if not mode_configured:
         _report(
             report, "gateway_config_missing",
             operation_id=operation, route_id=selected_route,
-            provider=provider, model=model,
-            configured=bool(provider and key and model),
+            provider=provider, model=model, agent_id_configured=bool(agent_id),
+            configured=False, mode=selected_mode,
         )
-        raise RuntimeError(f"Router cell {selected_route} is not fully configured")
+        if selected_mode == "agent" and not agent_id:
+            raise RuntimeError(
+                f"Router cell {selected_route} has no Agent ID configured"
+            )
+        raise RuntimeError(
+            f"Router cell {selected_route} is not fully configured for {selected_mode} mode"
+        )
     _report(
         report, "gateway_config_loaded",
         operation_id=operation, route_id=selected_route,
         provider=provider, model=model, configured=True,
     )
 
-    if provider in {"gemini", "google", "google-gemini"}:
+    if selected_mode == "agent":
+        base = (config["endpoint"] or PROVIDER_DEFAULTS.get(provider, "")).rstrip("/")
+        if not base:
+            raise RuntimeError(
+                f"Router cell {selected_route} requires an API endpoint for Agent mode"
+            )
+        for suffix in ("/chat/completions", "/responses", "/conversations"):
+            if base.endswith(suffix):
+                base = base[:-len(suffix)]
+                break
+        if not base.endswith("/v1"):
+            base += "/v1"
+        url = base + "/conversations"
+        payload = {
+            "agent_id": agent_id,
+            "agent_version": 0,
+            "inputs": history or [{"role": "user", "content": prompt}],
+        }
+        headers = {"Authorization": f"Bearer {key}"}
+        api_method = "conversations"
+    elif provider in {"gemini", "google", "google-gemini"}:
         base = (config["endpoint"] or PROVIDER_DEFAULTS["gemini"]).rstrip("/")
         url = f"{base}/models/{model}:generateContent"
         payload = {"contents": _gemini_contents(prompt, history)}
@@ -454,9 +517,13 @@ def generate_response(
     )
 
     response_text = (
-        _extract_gemini_text(data)
-        if provider in {"gemini", "google", "google-gemini"}
-        else _extract_openai_text(data)
+        _extract_agent_text(data)
+        if selected_mode == "agent"
+        else (
+            _extract_gemini_text(data)
+            if provider in {"gemini", "google", "google-gemini"}
+            else _extract_openai_text(data)
+        )
     )
     if not response_text:
         _report(
