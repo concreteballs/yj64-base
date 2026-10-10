@@ -1749,15 +1749,17 @@ def test_all_routes(
         route_id = item["route_id"]
         provider = item["provider"]
         model = item["model"]
+        mode = "agent" if item.get("agent_id", "").strip() else "text"
         _report(
             report, "router_all_test_route_started",
             route_id=route_id, provider=provider, model=model,
+            mode=mode, agent_id_configured=bool(item.get("agent_id", "").strip()),
             prompt=prompt,
         )
         try:
             result = generate_response(
                 user_data_dir, prompt, report=report,
-                route_id=route_id, mode="text",
+                route_id=route_id, mode=mode,
             )
             status = "PASS"
             detail = result["response"]
@@ -1766,13 +1768,13 @@ def test_all_routes(
             detail = f"{type(exc).__name__}: {exc}"
             _report(
                 report, "router_all_test_route_failed",
-                route_id=route_id, provider=provider, model=model,
+                route_id=route_id, provider=provider, model=model, mode=mode,
                 error_type=type(exc).__name__, error=str(exc),
             )
         else:
             _report(
                 report, "router_all_test_route_completed",
-                route_id=route_id, provider=provider, model=model,
+                route_id=route_id, provider=provider, model=model, mode=mode,
                 response=result["response"],
             )
         results.append({
@@ -2342,7 +2344,7 @@ if __name__ == "__main__":
 END ALLOWED
 ============================================================ КОНЕЦ ОПЕРАЦИОННОГО СТОЛА
 EXPECTED-GIT-BLOB-SHA:main.py=763c0a1f062597ba20097c8433e72d131c4e9e86
-EXPECTED-GIT-BLOB-SHA:llm_api.py=a2f9a03a76aaa74d5ffe94ed9ebfd6da2d75e390
+EXPECTED-GIT-BLOB-SHA:llm_api.py=990e83aebcdfdc6d2e9e720cde1f78586fa00383
 EXPECTED-GIT-BLOB-SHA:llm_settings.py=87ade5d3208f813f188ba3f19a6581b55de2ea98
 EXPECTED-GIT-BLOB-SHA:android_src/MonitorActivity.java=3ba31910e912241cab181efc57b71cd929262e03
 EXPECTED-GIT-BLOB-SHA:tools/verify_guard.py=887269e44f5fbffc093de87d02e7bf960f3e138b
