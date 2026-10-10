@@ -189,14 +189,14 @@ class YJ64BaseApp(App):
             "message_mode_changed",
             mode=mode,
             note=(
-                "Agent mode is a route marker only; the agent API adapter is not implemented yet."
+                "Agent mode selected; each participant uses its own configured Agent ID."
                 if mode == "agent" else "Text mode selected."
             ),
         )
         self.status.text = (
             "Text mode selected."
             if mode == "text"
-            else "Practical/agent mode marker selected; its API adapter is not implemented yet."
+            else "Agent mode selected; each participant uses its own configured Agent ID."
         )
 
     def _participant_config_status(self, participant_name: str) -> dict[str, str | bool]:
