@@ -615,15 +615,17 @@ def test_all_routes(
         route_id = item["route_id"]
         provider = item["provider"]
         model = item["model"]
+        mode = "agent" if item.get("agent_id", "").strip() else "text"
         _report(
             report, "router_all_test_route_started",
             route_id=route_id, provider=provider, model=model,
+            mode=mode, agent_id_configured=bool(item.get("agent_id", "").strip()),
             prompt=prompt,
         )
         try:
             result = generate_response(
                 user_data_dir, prompt, report=report,
-                route_id=route_id, mode="text",
+                route_id=route_id, mode=mode,
             )
             status = "PASS"
             detail = result["response"]
@@ -632,13 +634,13 @@ def test_all_routes(
             detail = f"{type(exc).__name__}: {exc}"
             _report(
                 report, "router_all_test_route_failed",
-                route_id=route_id, provider=provider, model=model,
+                route_id=route_id, provider=provider, model=model, mode=mode,
                 error_type=type(exc).__name__, error=str(exc),
             )
         else:
             _report(
                 report, "router_all_test_route_completed",
-                route_id=route_id, provider=provider, model=model,
+                route_id=route_id, provider=provider, model=model, mode=mode,
                 response=result["response"],
             )
         results.append({
