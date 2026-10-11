@@ -51,6 +51,64 @@ class MessageDistributor:
     def active_participant(self) -> str | None:
         return self._private_participant
 
+    def select_participant(
+        self,
+        user_data_dir: str | Path,
+        preferred: str | None = None,
+        report: Callable[..., None] | None = None,
+    ) -> str:
+        """Select a configured route once; never retry another participant after API failure."""
+        from llm_api import route_config_exists
+
+        participant_order = ("Participant 1", "Participant 2", "Participant 3")
+        connected = [
+            name for name in participant_order
+            if route_config_exists(user_data_dir, self.route_for_participant(name))
+        ]
+        owner_connected = route_config_exists(
+            user_data_dir, self.route_for_participant("Owner")
+        )
+
+        if preferred is not None:
+            if preferred not in PARTICIPANT_ROUTES:
+                raise ValueError(f"Unknown preferred participant: {preferred}")
+            if route_config_exists(
+                user_data_dir, self.route_for_participant(preferred)
+            ):
+                selected = preferred
+                reason = "preferred_participant_connected"
+            else:
+                selected = next(iter(connected), "Owner" if owner_connected else "")
+                reason = "preferred_participant_not_connected_fallback"
+        else:
+            selected = next(iter(connected), "Owner" if owner_connected else "")
+            reason = "first_connected_participant"
+
+        if not selected:
+            if report is not None:
+                report(
+                    "participant_selection_failed",
+                    preferred=preferred,
+                    connected_participants=connected,
+                    owner_connected=owner_connected,
+                )
+            raise RuntimeError(
+                "No connected LLM routes are configured for Owner or Participants 1–3"
+            )
+
+        route_id = self.route_for_participant(selected)
+        if report is not None:
+            report(
+                "participant_selected",
+                participant=selected,
+                route_id=route_id,
+                preferred=preferred,
+                connected_participants=connected,
+                owner_connected=owner_connected,
+                reason=reason,
+            )
+        return selected
+
     def next_participant(self, participants: list[str]) -> str:
         if not participants:
             raise ValueError("Cannot select the next participant from an empty queue")
