@@ -352,7 +352,7 @@ def _extract_agent_text(data: dict[str, Any]) -> str:
                 value = content.get("text")
                 if value is not None and str(value).strip():
                     texts.append(str(value).strip())
-    return "\\n".join(texts).strip()
+    return "\n".join(texts).strip()
 
 
 def _extract_openai_text(data: dict[str, Any]) -> str:
@@ -509,7 +509,17 @@ def generate_response(
         operation_id=operation, route_id=selected_route,
         provider=provider, model=model, api_method=api_method,
     )
-    data = _request("POST", url, headers, payload=payload)
+    try:
+        data = _request("POST", url, headers, payload=payload)
+    except Exception as exc:
+        _report(
+            report, "gateway_request_failed",
+            operation_id=operation, route_id=selected_route,
+            provider=provider, model=model, mode=selected_mode,
+            api_method=api_method, endpoint=url,
+            error_type=type(exc).__name__, error=str(exc),
+        )
+        raise
     _report(
         report, "gateway_http_response_received",
         operation_id=operation, route_id=selected_route,
@@ -556,10 +566,11 @@ def generate_test_response(
     user_data_dir: str | Path,
     report: Any = None,
     route_id: str = "route_owner",
+    mode: str = "text",
 ) -> dict[str, Any]:
     prompt = "Reply with exactly: YJ64_OK"
     return generate_response(
-        user_data_dir, prompt, report=report, route_id=route_id, mode="text"
+        user_data_dir, prompt, report=report, route_id=route_id, mode=mode
     )
 
 
