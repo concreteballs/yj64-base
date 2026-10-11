@@ -356,10 +356,12 @@ class YJ64BaseApp(App):
             self.chat_output.text += f"\n\nOwner: {message}"
 
             def run_chat() -> None:
+                selected_participant = None
+                selected_status = None
                 try:
                     self._append_report(
-                        "participant_api_request_sent",
-                        participant=participant_name,
+                        "participant_request_dispatch_started",
+                        requested_participant=participant_name,
                         route_id=status["route_id"],
                         mode=self.message_distributor.mode,
                         provider=status["provider"],
@@ -416,7 +418,18 @@ class YJ64BaseApp(App):
                     event = (
                         "participant_request_failed",
                         {
-                            "participant": participant_name,
+                            "requested_participant": participant_name,
+                            "participant": selected_participant or participant_name,
+                            "route_id": (
+                                selected_status["route_id"] if selected_status else status["route_id"]
+                            ),
+                            "mode": self.message_distributor.mode,
+                            "provider": (
+                                selected_status["provider"] if selected_status else status["provider"]
+                            ),
+                            "model": (
+                                selected_status["model"] if selected_status else status["model"]
+                            ),
                             "error_type": type(exc).__name__,
                             "error": str(exc),
                         },
@@ -429,7 +442,8 @@ class YJ64BaseApp(App):
                     self._append_report(event[0], **event[1])
                     output.text = text_value
                     if event[0] == "participant_api_response_received":
-                        self.chat_output.text += f"\n\n{participant_name}:\n{text_value}"
+                        actual_participant = event[1].get("participant", participant_name)
+                        self.chat_output.text += f"\n\n{actual_participant}:\n{text_value}"
                     send.disabled = False
 
                 Clock.schedule_once(finish, 0)
