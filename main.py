@@ -60,7 +60,7 @@ class YJ64BaseApp(App):
         root.add_widget(monitor_button)
 
         llm_button = Button(
-            text="Test LLM API + Copy Report",
+            text="Test OWNER LLM API + Copy Report",
             size_hint_y=None,
             height=72,
         )
@@ -84,7 +84,7 @@ class YJ64BaseApp(App):
         root.add_widget(settings_button)
 
         generation_button = Button(
-            text="Test LLM Generation + Copy",
+            text="Test OWNER LLM Generation + Copy",
             size_hint_y=None,
             height=72,
         )
@@ -365,27 +365,53 @@ class YJ64BaseApp(App):
                         provider=status["provider"],
                         model=status["model"],
                     )
+                    selected_participant = self.message_distributor.select_participant(
+                        self.user_data_dir,
+                        preferred=participant_name,
+                        report=lambda event, **data: self._append_report(
+                            "participant_" + event,
+                            **{"requested_participant": participant_name, **data},
+                        ),
+                    )
+                    selected_status = self._participant_config_status(selected_participant)
+                    self._append_report(
+                        "participant_api_request_sent",
+                        requested_participant=participant_name,
+                        participant=selected_participant,
+                        route_id=selected_status["route_id"],
+                        mode=self.message_distributor.mode,
+                        provider=selected_status["provider"],
+                        model=selected_status["model"],
+                    )
                     result = self.message_distributor.dispatch_message(
                         self.user_data_dir,
-                        participant_name,
+                        selected_participant,
                         message,
                         report=lambda event, **data: self._append_report(
                             "participant_" + event,
-                            participant=participant_name,
-                            **data,
+                            **{
+                                "participant": selected_participant,
+                                "requested_participant": participant_name,
+                                **data,
+                            },
                         ),
                     )
                     response = result["response"]
                     event = (
                         "participant_api_response_received",
                         {
-                            "participant": participant_name,
+                            "requested_participant": participant_name,
+                            "participant": selected_participant,
+                            "route_id": result["route_id"],
                             "provider": result["provider"],
                             "model": result["model"],
                             "response": response,
                         },
                     )
-                    text_value = response
+                    text_value = (
+                        response if selected_participant == participant_name
+                        else f"[{participant_name} is not connected; routed to {selected_participant}]\n{response}"
+                    )
                 except Exception as exc:
                     event = (
                         "participant_request_failed",
@@ -537,8 +563,7 @@ class YJ64BaseApp(App):
                         history=history,
                         report=lambda event, **data: self._append_report(
                             "group_dialogue_" + event,
-                            participant=participant,
-                            **data,
+                            **{"participant": participant, **data},
                         ),
                     )
                     response = result["response"]
@@ -710,7 +735,7 @@ class YJ64BaseApp(App):
                     ),
                 )
                 report = (
-                    "YJ-64 LLM API TEST\n"
+                    "YJ-64 OWNER LLM API TEST\n"
                     f"Provider: {result['provider']}\n"
                     f"Model: {result['model']}\n"
                     f"Result: {result['result']}"
@@ -725,7 +750,7 @@ class YJ64BaseApp(App):
                 )
             except Exception as exc:
                 report = (
-                    "YJ-64 LLM API TEST\n"
+                    "YJ-64 OWNER LLM API TEST\n"
                     "Result: FAILED\n"
                     f"Error: {type(exc).__name__}: {exc}"
                 )
@@ -763,7 +788,7 @@ class YJ64BaseApp(App):
                 )
                 chat_text = result["response"]
                 report = (
-                    "YJ-64 LLM GENERATION TEST\n"
+                    "YJ-64 OWNER LLM GENERATION TEST\n"
                     f"Provider: {result['provider']}\n"
                     f"Model: {result['model']}\n"
                     f"Prompt: {result['prompt']}\n"
@@ -781,7 +806,7 @@ class YJ64BaseApp(App):
                 )
             except Exception as exc:
                 report = (
-                    "YJ-64 LLM GENERATION TEST\n"
+                    "YJ-64 OWNER LLM GENERATION TEST\n"
                     "Result: FAILED\n"
                     f"Error: {type(exc).__name__}: {exc}"
                 )
@@ -821,14 +846,24 @@ class YJ64BaseApp(App):
         self.chat_input.text = ""
 
         def run_chat() -> None:
+            participant = None
+            selected_status = None
             try:
-                configured_participants = [
-                    name for name in ("Participant 1", "Participant 2", "Participant 3")
-                    if self._participant_config_status(name)["configured"]
-                ]
-                participant = (
-                    self.message_distributor.active_participant
-                    or (configured_participants[0] if configured_participants else "Owner")
+                participant = self.message_distributor.select_participant(
+                    self.user_data_dir,
+                    preferred=self.message_distributor.active_participant,
+                    report=lambda event, **data: self._append_report(
+                        "llm_chat_" + event, **data
+                    ),
+                )
+                selected_status = self._participant_config_status(participant)
+                self._append_report(
+                    "llm_chat_route_selected",
+                    participant=participant,
+                    route_id=selected_status["route_id"],
+                    mode=self.message_distributor.mode,
+                    provider=selected_status["provider"],
+                    model=selected_status["model"],
                 )
                 result = self.message_distributor.dispatch_message(
                     self.user_data_dir,
@@ -839,12 +874,20 @@ class YJ64BaseApp(App):
                     ),
                 )
                 report = (
-                    f"Owner: {prompt}\n"
-                    f"{participant}: {result['response']}"
+                    f"User: {prompt}\n"
+                    f"Participant: {participant}\n"
+                    f"Route: {result['route_id']}\n"
+                    f"Provider: {result['provider']}\n"
+                    f"Model: {result['model']}\n"
+                    f"Mode: {self.message_distributor.mode.upper()}\n"
+                    f"Response: {result['response']}"
                 )
                 event = (
                     "llm_chat_send_succeeded",
                     {
+                        "participant": participant,
+                        "route_id": result["route_id"],
+                        "mode": self.message_distributor.mode,
                         "provider": result["provider"],
                         "model": result["model"],
                         "prompt": prompt,
@@ -854,12 +897,24 @@ class YJ64BaseApp(App):
             except Exception as exc:
                 report = (
                     f"User: {prompt}\n"
+                    f"Participant: {participant or 'none'}\n"
                     "Result: FAILED\n"
                     f"Error: {type(exc).__name__}: {exc}"
                 )
                 event = (
                     "llm_chat_send_failed",
                     {
+                        "participant": participant,
+                        "route_id": (
+                            selected_status["route_id"] if selected_status else None
+                        ),
+                        "mode": self.message_distributor.mode,
+                        "provider": (
+                            selected_status["provider"] if selected_status else None
+                        ),
+                        "model": (
+                            selected_status["model"] if selected_status else None
+                        ),
                         "prompt": prompt,
                         "error_type": type(exc).__name__,
                         "error": str(exc),
