@@ -313,21 +313,46 @@ class LLMSettingsPopup(Popup):
 
     def _test_one(self, *_: Any) -> None:
         self._save()
-        self.status.text = f"Testing text generation through {self.route_id}..."
+        config = load_config(self.user_data_dir, route_id=self.route_id)
+        mode = "agent" if config.get("agent_id", "").strip() else "text"
+        self.status.text = f"Testing {mode.upper()} generation through {self.route_id}..."
 
         def worker() -> None:
-            lines = [f"YJ-64 ROUTER TEST — {self.route_id}"]
+            lines = [f"YJ-64 ROUTER TEST — {self.route_id}", f"Mode: {mode.upper()}"]
+            self._report(
+                "router_one_test_started",
+                route_id=self.route_id,
+                provider=config.get("provider", ""),
+                model=config.get("model", ""),
+                mode=mode,
+                agent_id_configured=bool(config.get("agent_id", "").strip()),
+            )
             try:
                 result = generate_test_response(
-                    self.user_data_dir, route_id=self.route_id,
+                    self.user_data_dir, route_id=self.route_id, mode=mode,
                     report=lambda event, **data: self._report(event, **data),
                 )
                 lines.extend([
-                    "Result: SUCCESS", f"Provider: {result['provider']}",
-                    f"Model: {result['model']}", f"Response: {result['response']}",
+                    "Result: SUCCESS", f"Route: {result['route_id']}",
+                    f"Provider: {result['provider']}", f"Model: {result['model']}",
+                    f"Mode: {mode.upper()}", f"Response: {result['response']}",
                 ])
+                self._report(
+                    "router_one_test_completed",
+                    route_id=result["route_id"], provider=result["provider"],
+                    model=result["model"], mode=mode,
+                    response=result["response"],
+                )
             except Exception as exc:
                 lines.extend(["Result: FAILED", f"Error: {type(exc).__name__}: {exc}"])
+                self._report(
+                    "router_one_test_failed",
+                    route_id=self.route_id,
+                    provider=config.get("provider", ""),
+                    model=config.get("model", ""),
+                    mode=mode,
+                    error_type=type(exc).__name__, error=str(exc),
+                )
             report_text = "\n".join(lines)
 
             def finish(_dt: float) -> None:
